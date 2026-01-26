@@ -45,10 +45,14 @@ export class TransactionSubscription {
   private programId: PublicKey | null = null;
   private programType: 'pump' | 'pump_amm' | null = null;
   private coder: BorshCoder | null = null;
+  private accountListenerId: number | null = null;
+  private logsListenerId: number | null = null;
+  private latestAccountData: { data: any; lamports: number; sol: number; slot: number } | null = null;
 
   constructor(bondingCurve: string | PublicKey, rpcUrl?: string) {
     const url = rpcUrl || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-    this.connection = new Connection(url, 'processed');
+    // Use 'finalized' commitment as requested
+    this.connection = new Connection(url, 'finalized');
     this.bondingCurve = typeof bondingCurve === 'string' 
       ? new PublicKey(bondingCurve) 
       : bondingCurve;
@@ -208,8 +212,51 @@ export class TransactionSubscription {
   }
 
   /**
-   * Subscribe to bonding curve account changes using accountSubscribe
-   * We'll use program logs and filter by checking if bonding curve is involved
+   * Decode bonding curve account data using IDL
+   */
+  private decodeAccountData(accountData: Buffer): any | null {
+    if (!this.coder) {
+      return null;
+    }
+
+    try {
+      // Account data starts with an 8-byte discriminator
+      if (accountData.length < 8) {
+        return null;
+      }
+
+      // Try to decode using accounts coder
+      const accountsCoder = this.coder.accounts as any;
+      
+      if (accountsCoder && accountsCoder.layouts && accountsCoder.layouts['BondingCurve']) {
+        const accountLayout = accountsCoder.layouts['BondingCurve'];
+        const decoded = accountLayout.decode(accountData);
+        if (decoded !== null && decoded !== undefined) {
+          return decoded;
+        }
+      }
+      
+      // Try using decode method
+      if (accountsCoder && typeof accountsCoder.decode === 'function') {
+        try {
+          const decoded = accountsCoder.decode(accountData);
+          if (decoded && decoded.data) {
+            return decoded.data;
+          }
+        } catch (decodeError) {
+          // Continue to next method
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Failed to decode account data:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Subscribe to program logs for buy/sell events and account changes for account data
    */
   async subscribe(): Promise<void> {
     if (this.status.subscribed) {
@@ -226,69 +273,89 @@ export class TransactionSubscription {
         throw new Error('Failed to determine program type');
       }
 
-      // Also subscribe to account changes to track when bonding curve is modified
-      // This ensures we catch all transactions that modify the account
-      const accountListenerId = this.connection.onAccountChange(
+      // Subscribe to account changes to decode account data (no transaction fetching!)
+      this.accountListenerId = this.connection.onAccountChange(
         this.bondingCurve,
-        async (accountInfo, context) => {
-          // Account changed - fetch the most recent transaction for this account
-          try {
-            const signatures = await this.connection.getSignaturesForAddress(
-              this.bondingCurve,
-              { limit: 1 }
-            );
-
-            if (signatures.length === 0) {
-              return;
-            }
-
-            const signature = signatures[0].signature;
-            
-            // Fetch the full transaction
-            const tx = await this.connection.getTransaction(signature, {
-              maxSupportedTransactionVersion: 0
-            });
-
-            if (!tx || !tx.meta || tx.meta.err || !tx.meta.logMessages) {
-              return;
-            }
-
-            // Parse logs for buy/sell events
-            const events = this.parseLogsForEvents(tx.meta.logMessages);
-            
-            for (const event of events) {
-              this.status.eventCount++;
-              this.status.lastEventTime = new Date();
+        (accountInfo, context) => {
+          // Decode account data from the subscription notification
+          if (accountInfo.data && Buffer.isBuffer(accountInfo.data)) {
+            const decodedAccountData = this.decodeAccountData(accountInfo.data);
+            if (decodedAccountData) {
+              // Convert lamports to SOL (1 SOL = 1,000,000,000 lamports)
+              const lamports = accountInfo.lamports || 0;
+              const sol = lamports / 1_000_000_000;
               
-              console.log(`\n✓ ${event.type.toUpperCase()} event received:`, {
-                signature: signature,
-                slot: context.slot,
-                bondingCurve: this.bondingCurve.toString()
-              });
-
-              // Create the event object
-              const transactionEvent: TransactionEvent = {
-                type: event.type,
-                bondingCurve: this.bondingCurve.toString(),
-                data: event.data,
-                signature: signature,
+              // Store latest account data for use in transaction events
+              this.latestAccountData = {
+                data: decodedAccountData,
+                lamports: lamports,
+                sol: sol,
                 slot: context.slot
               };
-
-              // Notify all callbacks
-              this.notifyCallbacks(transactionEvent);
+              
+              console.log(`\n[Account Update] Slot: ${context.slot}`);
+              console.log(`  Lamports: ${lamports.toLocaleString()}`);
+              console.log(`  SOL: ${sol.toFixed(9)}`);
+              console.log(`  Decoded bonding curve data:`, {
+                virtualTokenReserves: decodedAccountData.virtual_token_reserves?.toString(),
+                virtualSolReserves: decodedAccountData.virtual_sol_reserves?.toString(),
+                realTokenReserves: decodedAccountData.real_token_reserves?.toString(),
+                realSolReserves: decodedAccountData.real_sol_reserves?.toString(),
+                tokenTotalSupply: decodedAccountData.token_total_supply?.toString(),
+                complete: decodedAccountData.complete,
+                creator: decodedAccountData.creator?.toString(),
+                isMayhemMode: decodedAccountData.is_mayhem_mode
+              });
             }
-          } catch (error) {
-            console.error('Error processing account change:', error);
           }
         },
-        'processed'
+        'finalized'
+      );
+
+      // Subscribe to program logs to detect buy/sell events directly (like newpairs does)
+      // This avoids fetching transactions and causing 429 errors
+      this.logsListenerId = this.connection.onLogs(
+        this.programId,
+        (logs, context) => {
+          // Parse logs for buy/sell events
+          const events = this.parseLogsForEvents(logs.logs);
+          
+          for (const event of events) {
+            this.status.eventCount++;
+            this.status.lastEventTime = new Date();
+            
+            console.log(`\n✓ ${event.type.toUpperCase()} event received:`, {
+              signature: logs.signature,
+              slot: context.slot,
+              bondingCurve: this.bondingCurve.toString()
+            });
+
+            // Create the event object with decoded account data if available
+            const transactionEvent: TransactionEvent = {
+              type: event.type,
+              bondingCurve: this.bondingCurve.toString(),
+              data: {
+                ...event.data,
+                accountData: this.latestAccountData?.data || null, // Include latest decoded account state
+                lamports: this.latestAccountData?.lamports || 0,
+                sol: this.latestAccountData?.sol || 0
+              },
+              signature: logs.signature, // Signature from logs
+              slot: context.slot
+            };
+
+            // Notify all callbacks
+            this.notifyCallbacks(transactionEvent);
+          }
+        },
+        'finalized'
       );
 
       this.status.subscribed = true;
-      this.status.listenerId = accountListenerId;
-      this.subscriptionId = accountListenerId;
-      console.log(`✓ Subscribed to account changes with listener ID: ${accountListenerId}`);
+      this.status.listenerId = this.logsListenerId;
+      this.subscriptionId = this.logsListenerId;
+      console.log(`✓ Subscribed to program logs with listener ID: ${this.logsListenerId}`);
+      console.log(`✓ Subscribed to account changes with listener ID: ${this.accountListenerId}`);
       console.log(`✓ Monitoring bonding curve: ${this.bondingCurve.toString()}`);
       console.log(`✓ Program: ${this.programType} (${this.programId.toString()})`);
       console.log('Waiting for buy/sell transactions...\n');

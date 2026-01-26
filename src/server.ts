@@ -1,34 +1,45 @@
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { NewPairsSubscription } from './lib/newpairs';
-import { TransactionSubscription } from './lib/transactions';
+import { TransactionSubscription, TransactionEvent } from './lib/transactions';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Add middleware to log all requests (but don't interfere with WebSocket upgrades)
+app.use((req, res, next) => {
+  if (req.url?.startsWith('/ws/')) {
+    console.log(`[DEBUG] Express middleware saw WebSocket path: ${req.url}`);
+    // Don't process WebSocket requests, let them pass through
+    return next();
+  }
+  next();
+});
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-// WebSocket server for new pairs
-const wssNewPairs = new WebSocketServer({ server, path: '/ws/newpairs' });
-
-// WebSocket server for transactions (will handle path routing manually)
-// We'll use noServer and handle upgrade manually to support path-based routing
+// WebSocket servers - use noServer to handle routing manually
+const wssNewPairs = new WebSocketServer({ noServer: true });
 const wssTransactions = new WebSocketServer({ noServer: true });
 
-// Handle WebSocket upgrade requests for transaction subscriptions
-// Only handle /ws/txs, let wssNewPairs handle /ws/newpairs automatically
+// Handle WebSocket upgrade requests manually for both endpoints
 server.on('upgrade', (request, socket, head) => {
-  const urlString = request.url || '';
-  const pathname = urlString.split('?')[0]; // Get pathname before query string
+  const pathname = (request.url || '').split('?')[0];
   
-  if (pathname === '/ws/txs') {
-    wssTransactions.handleUpgrade(request, socket, head, (ws) => {
-      wssTransactions.emit('connection', ws, request);
+  if (pathname === '/ws/newpairs') {
+    wssNewPairs.handleUpgrade(request, socket, head, (ws, req) => {
+      wssNewPairs.emit('connection', ws, req);
     });
+  } else if (pathname === '/ws/txs') {
+    wssTransactions.handleUpgrade(request, socket, head, (ws, req) => {
+      wssTransactions.emit('connection', ws, req);
+    });
+  } else {
+    // Unknown path - close connection
+    socket.destroy();
   }
-  // Don't destroy other paths - let other WebSocket servers handle them
 });
 
 const newPairsSubscription = new NewPairsSubscription();
@@ -100,49 +111,72 @@ const transactionSubscriptions = new Map<string, {
 
 // WebSocket handler for transactions
 wssTransactions.on('connection', async (ws, req) => {
-  const urlString = req.url || '';
-  let bondingCurve: string | null = null;
+  console.log(`[DEBUG] ✓ Transaction WS connection handler called!`);
+  console.log(`[DEBUG] Request URL: ${req.url}`);
+  console.log(`[DEBUG] Request method: ${req.method}`);
+  console.log(`[DEBUG] Request headers:`, req.headers);
   
-  // Parse URL - handle both ?bondingCurve=value and ?=value formats
+  // Add error handler immediately
+  ws.on('error', (error) => {
+    console.error(`[DEBUG] WebSocket error:`, error);
+  });
+
+  ws.on('close', (code, reason) => {
+    console.log(`[DEBUG] WebSocket closed. Code: ${code}, Reason: ${reason?.toString()}`);
+  });
+
   try {
-    // First try to parse as standard URL
-    const url = new URL(urlString, `http://${req.headers.host}`);
-    bondingCurve = url.searchParams.get('bondingCurve');
-  } catch (error) {
-    // URL parsing failed, will try manual parsing below
-  }
-  
-  // If no bondingCurve param found, try manual parsing for ?=value format
-  if (!bondingCurve) {
-    // Match ?=value format
-    const match1 = urlString.match(/\/ws\/txs\?=([A-Za-z0-9]{32,44})/);
-    if (match1) {
-      bondingCurve = match1[1];
-    } else {
-      // Also try ?bondingCurve=value format manually
-      const match2 = urlString.match(/\/ws\/txs\?bondingCurve=([A-Za-z0-9]{32,44})/);
-      if (match2) {
-        bondingCurve = match2[1];
+    const urlString = req.url || '';
+    let bondingCurve: string | null = null;
+    
+    console.log(`[DEBUG] Transaction WS connection. URL: ${urlString}`);
+    
+    // Parse URL - handle both ?bondingCurve=value and ?=value formats
+    try {
+      // First try to parse as standard URL
+      const url = new URL(urlString, `http://${req.headers.host}`);
+      bondingCurve = url.searchParams.get('bondingCurve');
+      console.log(`[DEBUG] URL.parse result - bondingCurve from searchParams: ${bondingCurve}, search: ${url.search}`);
+    } catch (error) {
+      console.log(`[DEBUG] URL.parse failed:`, error);
+      // URL parsing failed, will try manual parsing below
+    }
+    
+    // If no bondingCurve param found, try manual parsing for ?=value format
+    if (!bondingCurve) {
+      // Match ?=value format
+      const match1 = urlString.match(/\/ws\/txs\?=([A-Za-z0-9]{32,44})/);
+      if (match1) {
+        bondingCurve = match1[1];
+        console.log(`[DEBUG] Manual regex match1 found: ${bondingCurve}`);
+      } else {
+        // Also try ?bondingCurve=value format manually
+        const match2 = urlString.match(/\/ws\/txs\?bondingCurve=([A-Za-z0-9]{32,44})/);
+        if (match2) {
+          bondingCurve = match2[1];
+          console.log(`[DEBUG] Manual regex match2 found: ${bondingCurve}`);
+        }
       }
     }
-  }
-  
-  if (!bondingCurve || !/^[A-Za-z0-9]{32,44}$/.test(bondingCurve)) {
-    console.error(`✗ Invalid bondingCurve parameter. URL: ${urlString}`);
-    ws.close(1008, 'Invalid bondingCurve parameter. Expected: /ws/txs?bondingCurve=[address] or /ws/txs?=[address]');
-    return;
-  }
-  const clientInfo = {
-    ip: req.socket.remoteAddress,
-    path: req.url,
-    bondingCurve
-  };
+    
+    console.log(`[DEBUG] Final bondingCurve value: ${bondingCurve}`);
+    
+    if (!bondingCurve || !/^[A-Za-z0-9]{32,44}$/.test(bondingCurve)) {
+      console.error(`✗ Invalid bondingCurve parameter. URL: ${urlString}, Parsed: ${bondingCurve}`);
+      ws.close(1008, 'Invalid bondingCurve parameter. Expected: /ws/txs?bondingCurve=[address] or /ws/txs?=[address]');
+      return;
+    }
+    
+    const clientInfo = {
+      ip: req.socket.remoteAddress,
+      path: req.url,
+      bondingCurve
+    };
 
-  console.log(`✓ New transaction WebSocket client connected from ${clientInfo.ip}`);
-  console.log(`  Bonding curve: ${bondingCurve}`);
-  console.log(`  Path: ${req.url}`);
+    console.log(`✓ New transaction WebSocket client connected from ${clientInfo.ip}`);
+    console.log(`  Bonding curve: ${bondingCurve}`);
+    console.log(`  Path: ${req.url}`);
 
-  try {
     // Get or create subscription for this bonding curve
     let subscriptionData = transactionSubscriptions.get(bondingCurve);
     
@@ -159,7 +193,7 @@ wssTransactions.on('connection', async (ws, req) => {
       transactionSubscriptions.set(bondingCurve, subscriptionData);
       
       // Set up callback to broadcast to all clients for this bonding curve
-      subscription.onTransaction((event) => {
+      subscription.onTransaction((event: TransactionEvent) => {
         const message = JSON.stringify(event);
         subscriptionData!.clients.forEach((client) => {
           if (client.readyState === 1) {
@@ -199,16 +233,34 @@ wssTransactions.on('connection', async (ws, req) => {
       console.log(`✗ Transaction WebSocket client disconnected for bonding curve: ${bondingCurve}`);
       subscriptionData?.clients.delete(ws);
       
-      // If no more clients, unsubscribe (optional - you might want to keep it active)
+      // If no more clients, unsubscribe for performance
       if (subscriptionData && subscriptionData.clients.size === 0) {
-        console.log(`  No more clients for ${bondingCurve}, keeping subscription active`);
-        // Optionally unsubscribe: subscriptionData.subscription.unsubscribe();
+        console.log(`  No more clients for ${bondingCurve}, unsubscribing...`);
+        try {
+          subscriptionData.subscription.unsubscribe();
+          transactionSubscriptions.delete(bondingCurve);
+          console.log(`  ✓ Unsubscribed and removed subscription for ${bondingCurve}`);
+        } catch (error) {
+          console.error(`  ✗ Error unsubscribing:`, error);
+        }
       }
     });
 
     ws.on('error', (error) => {
       console.error('✗ Transaction WebSocket error:', error);
       subscriptionData?.clients.delete(ws);
+      
+      // If no more clients, unsubscribe for performance
+      if (subscriptionData && subscriptionData.clients.size === 0) {
+        console.log(`  No more clients for ${bondingCurve} after error, unsubscribing...`);
+        try {
+          subscriptionData.subscription.unsubscribe();
+          transactionSubscriptions.delete(bondingCurve);
+          console.log(`  ✓ Unsubscribed and removed subscription for ${bondingCurve}`);
+        } catch (unsubError) {
+          console.error(`  ✗ Error unsubscribing:`, unsubError);
+        }
+      }
     });
 
     ws.on('message', (message) => {
@@ -217,7 +269,12 @@ wssTransactions.on('connection', async (ws, req) => {
 
   } catch (error) {
     console.error('✗ Error setting up transaction subscription:', error);
-    ws.close(1011, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error('✗ Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+    try {
+      ws.close(1011, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } catch (closeError) {
+      console.error('✗ Error closing WebSocket:', closeError);
+    }
   }
 });
 
