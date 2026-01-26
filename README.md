@@ -218,23 +218,6 @@ const ws = new WebSocket(`ws://localhost:3000/ws/txs?=${bondingCurve}`);
 - Commitment level: `finalized`
 - **No transaction fetching** - uses only subscription data (prevents rate limiting)
 
-## Program Support
-
-### Pump Program (`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`)
-- Events: `CreateEvent`, `TradeEvent`
-- TradeEvent includes `is_buy` field to determine buy/sell
-
-### Pump AMM Program (`pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`)
-- Events: `BuyEvent`, `SellEvent`
-- Separate events for buy and sell operations
-
-## Performance
-
-- **Zero RPC Rate Limiting**: Uses only WebSocket subscriptions, no polling
-- **Efficient Event Detection**: Direct log parsing with Anchor discriminators
-- **Automatic Cleanup**: Subscriptions are removed when clients disconnect
-- **Shared Subscriptions**: Multiple clients can share the same bonding curve subscription
-
 ## Development
 
 ```bash
