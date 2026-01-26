@@ -3,7 +3,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { PublicKey } from '@solana/web3.js';
 import { NewPairsSubscription } from './lib/newpairs';
 import { TransactionSubscription, TransactionEvent } from './lib/transactions';
-import { getTokenInfo, getBondingCurveFromMint } from './lib/tokeninfo';
+import { getTokenInfo, getBondingCurveFromMint, getTopHolders } from './lib/tokeninfo';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -63,12 +63,14 @@ ${reset}`);
   const http2 = `    - http://localhost:${PORT}/status`;
   const http3 = `    - http://localhost:${PORT}/info/[mint]`;
   const http4 = `    - http://localhost:${PORT}/info/derive/[mint]`;
-  const http5 = `    - http://localhost:${PORT}/`;
+  const http5 = `    - http://localhost:${PORT}/topholders/[mint]`;
+  const http6 = `    - http://localhost:${PORT}/`;
   console.log(`${green}│${reset} ${http1.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http2.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http3.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http4.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http5.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset} ${http6.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}└${'─'.repeat(borderWidth)}┘${reset}\n`);
   process.stdout.write(`${white}┌${'─'.repeat(borderWidth)}┐${reset}\n`);
   process.stdout.write(`${white}│${reset}              Connection Status                            ${white}│${reset}\n`);
@@ -433,6 +435,38 @@ app.get('/info/derive/:mint', async (req, res) => {
   }
 });
 
+app.get('/topholders/:mint', async (req, res) => {
+  try {
+    const { mint } = req.params;
+    
+    if (!mint || !/^[A-Za-z0-9]{32,44}$/.test(mint)) {
+      return res.status(400).json({
+        error: 'Invalid mint address',
+        message: 'Mint address must be a valid Solana public key (32-44 alphanumeric characters)'
+      });
+    }
+
+    try {
+      new PublicKey(mint);
+    } catch (pubkeyError) {
+      return res.status(400).json({
+        error: 'Invalid mint address',
+        message: `Invalid Solana public key format: ${pubkeyError instanceof Error ? pubkeyError.message : 'Invalid format'}`
+      });
+    }
+
+    const topHolders = await getTopHolders(mint);
+    res.json(topHolders);
+  } catch (error) {
+    console.error('Error fetching top holders:', error);
+    const statusCode = error instanceof Error && error.message.includes('Invalid mint') ? 400 : 500;
+    res.status(statusCode).json({
+      error: 'Failed to fetch top holders',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({
     message: 'PumpAPI WebSocket API',
@@ -445,7 +479,8 @@ app.get('/', (req, res) => {
         health: '/health',
         status: '/status',
         tokenInfo: '/info/[mint]',
-        bondingCurve: '/info/derive/[mint]'
+        bondingCurve: '/info/derive/[mint]',
+        topHolders: '/topholders/[mint]'
       }
     }
   });

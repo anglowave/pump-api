@@ -25,6 +25,12 @@ export interface BondingCurveInfo {
   bondingCurve: string;
 }
 
+export interface TopHolder {
+  wallet: string;
+  percentage: number;
+  isBondingCurve?: boolean;
+}
+
 export async function deriveBondingCurve(mint: string | PublicKey): Promise<PublicKey> {
   const mintPubkey = typeof mint === 'string' ? new PublicKey(mint) : mint;
   const [bondingCurve] = PublicKey.findProgramAddressSync(
@@ -284,5 +290,88 @@ function decodeBondingCurve(accountData: Buffer, coder: BorshCoder): any | null 
     console.error('Failed to decode bonding curve account data:', error);
     return null;
   }
+}
+
+export async function getTopHolders(
+  mint: string | PublicKey,
+  rpcUrl?: string
+): Promise<TopHolder[]> {
+  const url = rpcUrl || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+  const connection = new Connection(url, 'confirmed');
+
+  let mintPubkey: PublicKey;
+  try {
+    mintPubkey = typeof mint === 'string' ? new PublicKey(mint) : mint;
+  } catch (error) {
+    throw new Error(`Invalid mint address: ${mint}. ${error instanceof Error ? error.message : 'Invalid public key format'}`);
+  }
+
+  const bondingCurve = await deriveBondingCurve(mintPubkey);
+  
+  const [largestAccounts, mintInfo] = await Promise.all([
+    connection.getTokenLargestAccounts(mintPubkey),
+    connection.getParsedAccountInfo(mintPubkey)
+  ]);
+
+  if (!mintInfo.value) {
+    throw new Error(`Mint account not found: ${mintPubkey.toString()}`);
+  }
+
+  const parsedMint = (mintInfo.value.data as any).parsed;
+  if (!parsedMint || parsedMint.type !== 'mint') {
+    throw new Error(`Invalid mint account: ${mintPubkey.toString()}`);
+  }
+
+  const supply = BigInt(parsedMint.info.supply || '0');
+  if (supply === 0n) {
+    return [];
+  }
+
+  const tokenAccountPubkeys = largestAccounts.value.map(acc => new PublicKey(acc.address));
+  
+  const accountInfos = await connection.getMultipleAccountsInfo(tokenAccountPubkeys);
+  
+  const holders: TopHolder[] = [];
+
+  for (let i = 0; i < largestAccounts.value.length; i++) {
+    try {
+      const account = largestAccounts.value[i];
+      const accountInfo = accountInfos[i];
+      
+      if (!accountInfo) {
+        continue;
+      }
+
+      const tokenAccountProgramOwner = accountInfo.owner;
+      const isBondingCurve = tokenAccountProgramOwner.equals(PUMP_PROGRAM_ID) ||
+                            tokenAccountProgramOwner.equals(PUMP_AMM_PROGRAM_ID);
+
+      let walletAddress: string;
+      if (isBondingCurve) {
+        walletAddress = bondingCurve.toString();
+      } else {
+        const ownerOffset = 32;
+        if (accountInfo.data.length < ownerOffset + 32) {
+          continue;
+        }
+        const ownerBytes = accountInfo.data.slice(ownerOffset, ownerOffset + 32);
+        walletAddress = new PublicKey(ownerBytes).toString();
+      }
+
+      const rawAmount = BigInt(account.amount || '0');
+      const percentage = Number((rawAmount * 10000n) / supply) / 100;
+
+      holders.push({
+        wallet: walletAddress,
+        percentage: Math.round(percentage * 100) / 100,
+        isBondingCurve: isBondingCurve || undefined
+      });
+    } catch (error) {
+      console.error(`Error processing holder ${largestAccounts.value[i].address}:`, error);
+      continue;
+    }
+  }
+
+  return holders;
 }
 
