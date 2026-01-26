@@ -13,6 +13,8 @@ const SELL_EVENT_DISCRIMINATOR = [62, 47, 55, 10, 165, 3, 220, 42];
 export interface TransactionEvent {
   type: 'buy' | 'sell';
   amount: number; // Amount in SOL
+  signature: string;
+  timestamp: number; // Unix timestamp in seconds
 }
 
 export interface TransactionSubscriptionStatus {
@@ -274,9 +276,19 @@ export class TransactionSubscription {
             }
             const solAmount = solAmountLamports / 1_000_000_000;
 
+            // Extract timestamp from event data or use current time
+            let timestamp = Math.floor(Date.now() / 1000); // Default to current time in seconds
+            if (event.data?.timestamp) {
+              // If timestamp is in nanoseconds (i64), convert to seconds
+              const ts = Number(event.data.timestamp);
+              timestamp = ts > 1e12 ? Math.floor(ts / 1e9) : ts;
+            }
+
             const transactionEvent: TransactionEvent = {
               type: event.type,
-              amount: solAmount
+              amount: solAmount,
+              signature: logs.signature,
+              timestamp: timestamp
             };
 
             this.notifyCallbacks(transactionEvent);
