@@ -225,8 +225,6 @@ export class TransactionSubscription {
       throw new Error('Already subscribed');
     }
 
-    console.log(`Subscribing to transactions for bonding curve: ${this.bondingCurve.toString()}`);
-    
     try {
       await this.determineProgramType();
       
@@ -249,20 +247,6 @@ export class TransactionSubscription {
                 sol: sol,
                 slot: context.slot
               };
-              
-              console.log(`\n[Account Update] Slot: ${context.slot}`);
-              console.log(`  Lamports: ${lamports.toLocaleString()}`);
-              console.log(`  SOL: ${sol.toFixed(9)}`);
-              console.log(`  Decoded bonding curve data:`, {
-                virtualTokenReserves: decodedAccountData.virtual_token_reserves?.toString(),
-                virtualSolReserves: decodedAccountData.virtual_sol_reserves?.toString(),
-                realTokenReserves: decodedAccountData.real_token_reserves?.toString(),
-                realSolReserves: decodedAccountData.real_sol_reserves?.toString(),
-                tokenTotalSupply: decodedAccountData.token_total_supply?.toString(),
-                complete: decodedAccountData.complete,
-                creator: decodedAccountData.creator?.toString(),
-                isMayhemMode: decodedAccountData.is_mayhem_mode
-              });
             }
           }
         },
@@ -289,13 +273,6 @@ export class TransactionSubscription {
               }
             }
             const solAmount = solAmountLamports / 1_000_000_000;
-            
-            console.log(`\n${event.type.toUpperCase()} event received:`, {
-              signature: logs.signature,
-              slot: context.slot,
-              amount: `${solAmount.toFixed(9)} SOL`,
-              bondingCurve: this.bondingCurve.toString()
-            });
 
             const transactionEvent: TransactionEvent = {
               type: event.type,
@@ -311,11 +288,6 @@ export class TransactionSubscription {
       this.status.subscribed = true;
       this.status.listenerId = this.logsListenerId;
       this.subscriptionId = this.logsListenerId;
-      console.log(`Subscribed to program logs with listener ID: ${this.logsListenerId}`);
-      console.log(`Subscribed to account changes with listener ID: ${this.accountListenerId}`);
-      console.log(`Monitoring bonding curve: ${this.bondingCurve.toString()}`);
-      console.log(`Program: ${this.programType} (${this.programId.toString()})`);
-      console.log('Waiting for buy/sell transactions...\n');
     } catch (error) {
       this.status.error = error;
       console.error('Error subscribing to transactions:', error);

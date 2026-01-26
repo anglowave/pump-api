@@ -6,7 +6,6 @@ const PUMPFUN_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uB
 
 const CREATE_EVENT_DISCRIMINATOR = [27, 114, 169, 77, 222, 235, 99, 118];
 
-const TOKEN_PROGRAM = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 
 export interface NewPairEvent {
@@ -192,7 +191,7 @@ export class NewPairsSubscription {
       this.subscriptionId = listenerId;
     } catch (error) {
       this.status.error = error;
-      console.error('Error subscribing to Pumpfun program:', error);
+      console.error('Error subscribing to PumpAPI program:', error);
       if (error instanceof Error) {
         console.error('Error details:', error.message);
         console.error('Stack:', error.stack);

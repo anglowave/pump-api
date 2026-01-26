@@ -1,14 +1,14 @@
 
 ```
-██████╗ ██╗   ██╗███╗   ███╗██████╗      █████╗ ██████╗ ██╗
-██╔══██╗██║   ██║████╗ ████║██╔══██╗    ██╔══██╗██╔══██╗██║
+██████╗ ██╗   ██╗███╗   ███╗██████╗      █████╗ ██████╗ ██╗            
+██╔══██╗██║   ██║████╗ ████║██╔══██╗    ██╔══██╗██╔══██╗██║             
 ██████╔╝██║   ██║██╔████╔██║██████╔╝    ███████║██████╔╝██║
 ██╔═══╝ ██║   ██║██║╚██╔╝██║██╔═══╝     ██╔══██║██╔═══╝ ██║
 ██║     ╚██████╔╝██║ ╚═╝ ██║██║         ██║  ██║██║     ██║
 ╚═╝      ╚═════╝ ╚═╝     ╚═╝╚═╝         ╚═╝  ╚═╝╚═╝     ╚═╝
 ```
 
-Real-time WebSocket API for monitoring Pump.fun token pairs and transactions on Solana.
+Real-time WebSocket API for monitoring PumpAPI token pairs and transactions on Solana.
 
 ## Features
 
@@ -62,6 +62,61 @@ GET /status
 ```
 
 Returns detailed status of all subscriptions.
+
+### Token Info
+
+```http
+GET /info/:mint
+```
+
+Fetches complete token information including metadata from a mint address.
+
+**Example:**
+```bash
+curl http://localhost:3000/info/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
+```
+
+**Response:**
+```json
+{
+  "mint": "F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump",
+  "bondingCurve": "HLmFrsxFKNhA5ogZ3H5SnM5QRCG1LxpM6oDigsRFGz7M",
+  "complete": false,
+  "creator": "...",
+  "isMayhemMode": false,
+  "metadata": {
+    "name": "PenguCoin",
+    "symbol": "PENGUCOIN",
+    "uri": "https://ipfs.io/ipfs/...",
+    "decimals": 6,
+    "supply": "1000000000000000"
+  }
+}
+```
+
+**Note:** Metadata is fetched from Token-2022 extensions. If bonding curve decoding fails but metadata is available, the response will still include metadata with default values for bonding curve fields.
+
+### Derive Bonding Curve
+
+```http
+GET /info/derive/:mint
+```
+
+Derives and returns the bonding curve PDA address from a mint address.
+
+**Example:**
+```bash
+curl http://localhost:3000/info/derive/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
+```
+
+**Response:**
+```json
+{
+  "bondingCurve": "HLmFrsxFKNhA5ogZ3H5SnM5QRCG1LxpM6oDigsRFGz7M"
+}
+```
+
+This endpoint only derives the bonding curve address without fetching or decoding account data, making it fast and reliable.
 
 ## WebSocket Endpoints
 

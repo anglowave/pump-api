@@ -1,14 +1,15 @@
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
+import { PublicKey } from '@solana/web3.js';
 import { NewPairsSubscription } from './lib/newpairs';
 import { TransactionSubscription, TransactionEvent } from './lib/transactions';
+import { getTokenInfo, getBondingCurveFromMint } from './lib/tokeninfo';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use((req, res, next) => {
   if (req.url?.startsWith('/ws/')) {
-    console.log(`[DEBUG] Express middleware saw WebSocket path: ${req.url}`);
     return next();
   }
   next();
@@ -60,17 +61,23 @@ ${reset}`);
   console.log(`${green}│${reset}  HTTP:                                                    ${green}│${reset}`);
   const http1 = `    - http://localhost:${PORT}/health`;
   const http2 = `    - http://localhost:${PORT}/status`;
-  const http3 = `    - http://localhost:${PORT}/`;
+  const http3 = `    - http://localhost:${PORT}/info/[mint]`;
+  const http4 = `    - http://localhost:${PORT}/info/derive/[mint]`;
+  const http5 = `    - http://localhost:${PORT}/`;
   console.log(`${green}│${reset} ${http1.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http2.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http3.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset} ${http4.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset} ${http5.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}└${'─'.repeat(borderWidth)}┘${reset}\n`);
-  console.log(`${white}┌${'─'.repeat(borderWidth)}┐${reset}`);
-  console.log(`${white}│${reset}              Connection Status                            ${white}│${reset}`);
-  console.log(`${white}├${'─'.repeat(borderWidth)}┤${reset}`);
-  console.log(`${white}│${reset}  New Pairs Clients: 0                                     ${white}│${reset}`);
-  console.log(`${white}│${reset}  Transaction Subscriptions: 0                             ${white}│${reset}`);
-  console.log(`${white}└${'─'.repeat(borderWidth)}┘${reset}\n`);
+  process.stdout.write(`${white}┌${'─'.repeat(borderWidth)}┐${reset}\n`);
+  process.stdout.write(`${white}│${reset}              Connection Status                            ${white}│${reset}\n`);
+  process.stdout.write(`${white}├${'─'.repeat(borderWidth)}┤${reset}\n`);
+  process.stdout.write(`${white}│${reset}  New Pairs Clients: 0                                     ${white}│${reset}\n`);
+  process.stdout.write(`${white}│${reset}  Transaction Subscriptions: 0                             ${white}│${reset}\n`);
+  process.stdout.write(`${white}│${reset}  Total Transaction Clients: 0                            ${white}│${reset}\n`);
+  process.stdout.write(`${white}└${'─'.repeat(borderWidth)}┘${reset}\n\n`);
+  connectionStatusLineStart = 7;
 });
 
 const wssNewPairs = new WebSocketServer({ noServer: true });
@@ -97,22 +104,12 @@ const newPairsSubscription = new NewPairsSubscription();
 const newPairsClients = new Set<any>();
 
 wssNewPairs.on('connection', (ws, req) => {
-  const clientInfo = {
-    ip: req.socket.remoteAddress,
-    path: req.url
-  };
   newPairsClients.add(ws);
-  console.log(`New WebSocket client connected from ${clientInfo.ip} to ${clientInfo.path}`);
-  console.log(`  Total new pairs clients: ${newPairsClients.size}`);
-  console.log(`  Transaction subscriptions: ${transactionSubscriptions.size}`);
-  console.log(`  Total transaction clients: ${Array.from(transactionSubscriptions.values()).reduce((sum, sub) => sum + sub.clients.size, 0)}\n`);
+  updateConnectionStatus();
 
   ws.on('close', () => {
     newPairsClients.delete(ws);
-    console.log(`WebSocket client disconnected. Remaining: ${newPairsClients.size}`);
-    console.log(`  Total new pairs clients: ${newPairsClients.size}`);
-    console.log(`  Transaction subscriptions: ${transactionSubscriptions.size}`);
-    console.log(`  Total transaction clients: ${Array.from(transactionSubscriptions.values()).reduce((sum, sub) => sum + sub.clients.size, 0)}\n`);
+    updateConnectionStatus();
   });
 
   ws.on('error', (error) => {
@@ -128,7 +125,7 @@ wssNewPairs.on('connection', (ws, req) => {
     const status = newPairsSubscription.getStatus();
     ws.send(JSON.stringify({
       type: 'connected',
-      message: 'Connected to Pumpfun new pairs stream',
+      message: 'Connected to PumpAPI new pairs stream',
       subscriptionStatus: {
         subscribed: status.subscribed,
         eventCount: status.eventCount
@@ -163,49 +160,68 @@ const transactionSubscriptions = new Map<string, {
   clients: Set<WebSocket>;
 }>();
 
-wssTransactions.on('connection', async (ws, req) => {
-  console.log(`[DEBUG] Transaction WS connection handler called!`);
-  console.log(`[DEBUG] Request URL: ${req.url}`);
-  console.log(`[DEBUG] Request method: ${req.method}`);
-  console.log(`[DEBUG] Request headers:`, req.headers);
+let connectionStatusLineStart = 0;
+
+const updateConnectionStatus = () => {
+  const white = '\x1b[37m';
+  const reset = '\x1b[0m';
+  const borderWidth = 59;
+  const totalTransactionClients = Array.from(transactionSubscriptions.values()).reduce((sum, sub) => sum + sub.clients.size, 0);
   
+  if (connectionStatusLineStart > 0) {
+    process.stdout.write(`\x1b[${connectionStatusLineStart}A`);
+  }
+  
+  const lines = [
+    `${white}┌${'─'.repeat(borderWidth)}┐${reset}`,
+    `${white}│${reset}              Connection Status                            ${white}│${reset}`,
+    `${white}├${'─'.repeat(borderWidth)}┤${reset}`,
+    `${white}│${reset}  New Pairs Clients: ${newPairsClients.size.toString().padEnd(40)}${white}│${reset}`,
+    `${white}│${reset}  Transaction Subscriptions: ${transactionSubscriptions.size.toString().padEnd(33)}${white}│${reset}`,
+    `${white}│${reset}  Total Transaction Clients: ${totalTransactionClients.toString().padEnd(35)}${white}│${reset}`,
+    `${white}└${'─'.repeat(borderWidth)}┘${reset}`
+  ];
+  
+  for (let i = 0; i < lines.length; i++) {
+    process.stdout.write(`\x1b[0G\x1b[2K${lines[i]}`);
+    if (i < lines.length - 1) {
+      process.stdout.write(`\n`);
+    }
+  }
+  process.stdout.write(`\n`);
+  
+  connectionStatusLineStart = 7;
+};
+
+wssTransactions.on('connection', async (ws, req) => {
   ws.on('error', (error) => {
-    console.error(`[DEBUG] WebSocket error:`, error);
+    console.error('WebSocket error:', error);
   });
 
   ws.on('close', (code, reason) => {
-    console.log(`[DEBUG] WebSocket closed. Code: ${code}, Reason: ${reason?.toString()}`);
   });
 
   try {
     const urlString = req.url || '';
     let bondingCurve: string | null = null;
     
-    console.log(`[DEBUG] Transaction WS connection. URL: ${urlString}`);
-    
     try {
       const url = new URL(urlString, `http://${req.headers.host}`);
       bondingCurve = url.searchParams.get('bondingCurve');
-      console.log(`[DEBUG] URL.parse result - bondingCurve from searchParams: ${bondingCurve}, search: ${url.search}`);
     } catch (error) {
-      console.log(`[DEBUG] URL.parse failed:`, error);
     }
     
     if (!bondingCurve) {
       const match1 = urlString.match(/\/ws\/txs\?=([A-Za-z0-9]{32,44})/);
       if (match1) {
         bondingCurve = match1[1];
-        console.log(`[DEBUG] Manual regex match1 found: ${bondingCurve}`);
       } else {
         const match2 = urlString.match(/\/ws\/txs\?bondingCurve=([A-Za-z0-9]{32,44})/);
         if (match2) {
           bondingCurve = match2[1];
-          console.log(`[DEBUG] Manual regex match2 found: ${bondingCurve}`);
         }
       }
     }
-    
-    console.log(`[DEBUG] Final bondingCurve value: ${bondingCurve}`);
     
     if (!bondingCurve || !/^[A-Za-z0-9]{32,44}$/.test(bondingCurve)) {
       console.error(`Invalid bondingCurve parameter. URL: ${urlString}, Parsed: ${bondingCurve}`);
@@ -244,17 +260,10 @@ wssTransactions.on('connection', async (ws, req) => {
           }
         });
       });
-      
-      console.log(`Created new subscription for bonding curve: ${bondingCurve}`);
     }
 
     subscriptionData.clients.add(ws);
-    console.log(`New transaction WebSocket client connected from ${clientInfo.ip}`);
-    console.log(`  Bonding curve: ${bondingCurve}`);
-    console.log(`  Total clients for this bonding curve: ${subscriptionData.clients.size}`);
-    console.log(`  Total new pairs clients: ${newPairsClients.size}`);
-    console.log(`  Transaction subscriptions: ${transactionSubscriptions.size}`);
-    console.log(`  Total transaction clients: ${Array.from(transactionSubscriptions.values()).reduce((sum, sub) => sum + sub.clients.size, 0)}\n`);
+    updateConnectionStatus();
 
     const status = subscriptionData.subscription.getStatus();
     ws.send(JSON.stringify({
@@ -271,22 +280,16 @@ wssTransactions.on('connection', async (ws, req) => {
 
     ws.on('close', () => {
       subscriptionData?.clients.delete(ws);
-      console.log(`Transaction WebSocket client disconnected for bonding curve: ${bondingCurve}`);
-      
       if (subscriptionData && subscriptionData.clients.size === 0) {
-        console.log(`  No more clients for ${bondingCurve}, unsubscribing...`);
         try {
           subscriptionData.subscription.unsubscribe();
           transactionSubscriptions.delete(bondingCurve);
-          console.log(`  Unsubscribed and removed subscription for ${bondingCurve}`);
         } catch (error) {
-          console.error(`  Error unsubscribing:`, error);
+          console.error(`Error unsubscribing:`, error);
         }
       }
       
-      console.log(`  Total new pairs clients: ${newPairsClients.size}`);
-      console.log(`  Transaction subscriptions: ${transactionSubscriptions.size}`);
-      console.log(`  Total transaction clients: ${Array.from(transactionSubscriptions.values()).reduce((sum, sub) => sum + sub.clients.size, 0)}\n`);
+      updateConnectionStatus();
     });
 
     ws.on('error', (error) => {
@@ -294,15 +297,15 @@ wssTransactions.on('connection', async (ws, req) => {
       subscriptionData?.clients.delete(ws);
       
       if (subscriptionData && subscriptionData.clients.size === 0) {
-        console.log(`  No more clients for ${bondingCurve} after error, unsubscribing...`);
         try {
           subscriptionData.subscription.unsubscribe();
           transactionSubscriptions.delete(bondingCurve);
-          console.log(`  Unsubscribed and removed subscription for ${bondingCurve}`);
         } catch (unsubError) {
-          console.error(`  Error unsubscribing:`, unsubError);
+          console.error(`Error unsubscribing:`, unsubError);
         }
       }
+      
+      updateConnectionStatus();
     });
 
     ws.on('message', (message) => {
@@ -362,16 +365,88 @@ app.get('/status', (req, res) => {
   });
 });
 
+app.get('/info/:mint', async (req, res) => {
+  try {
+    const { mint } = req.params;
+    
+    // Validate mint address format
+    if (!mint || !/^[A-Za-z0-9]{32,44}$/.test(mint)) {
+      return res.status(400).json({
+        error: 'Invalid mint address',
+        message: 'Mint address must be a valid Solana public key (32-44 alphanumeric characters)'
+      });
+    }
+
+    // Try to validate it's a valid PublicKey
+    try {
+      new PublicKey(mint);
+    } catch (pubkeyError) {
+      return res.status(400).json({
+        error: 'Invalid mint address',
+        message: `Invalid Solana public key format: ${pubkeyError instanceof Error ? pubkeyError.message : 'Invalid format'}`
+      });
+    }
+
+    const tokenInfo = await getTokenInfo(mint);
+    res.json(tokenInfo);
+  } catch (error) {
+    console.error('Error fetching token info:', error);
+    const statusCode = error instanceof Error && error.message.includes('Invalid mint') ? 400 : 500;
+    res.status(statusCode).json({
+      error: 'Failed to fetch token info',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+app.get('/info/derive/:mint', async (req, res) => {
+  try {
+    const { mint } = req.params;
+    
+    // Validate mint address format
+    if (!mint || !/^[A-Za-z0-9]{32,44}$/.test(mint)) {
+      return res.status(400).json({
+        error: 'Invalid mint address',
+        message: 'Mint address must be a valid Solana public key (32-44 alphanumeric characters)'
+      });
+    }
+
+    // Try to validate it's a valid PublicKey
+    try {
+      new PublicKey(mint);
+    } catch (pubkeyError) {
+      return res.status(400).json({
+        error: 'Invalid mint address',
+        message: `Invalid Solana public key format: ${pubkeyError instanceof Error ? pubkeyError.message : 'Invalid format'}`
+      });
+    }
+
+    const bondingCurveInfo = await getBondingCurveFromMint(mint);
+    res.json(bondingCurveInfo);
+  } catch (error) {
+    console.error('Error fetching bonding curve:', error);
+    const statusCode = error instanceof Error && error.message.includes('Invalid mint') ? 400 : 500;
+    res.status(statusCode).json({
+      error: 'Failed to fetch bonding curve',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({
-    message: 'Pumpfun WebSocket API',
+    message: 'PumpAPI WebSocket API',
     endpoints: {
       websockets: {
         newPairs: '/ws/newpairs',
         transactions: '/ws/txs?bondingCurve=[address]'
       },
-      health: '/health',
-      status: '/status'
+      http: {
+        health: '/health',
+        status: '/status',
+        tokenInfo: '/info/[mint]',
+        bondingCurve: '/info/derive/[mint]'
+      }
     }
   });
 });
