@@ -6,25 +6,76 @@ import { TransactionSubscription, TransactionEvent } from './lib/transactions';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Add middleware to log all requests (but don't interfere with WebSocket upgrades)
 app.use((req, res, next) => {
   if (req.url?.startsWith('/ws/')) {
     console.log(`[DEBUG] Express middleware saw WebSocket path: ${req.url}`);
-    // Don't process WebSocket requests, let them pass through
     return next();
   }
   next();
 });
 
 const server = app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  const green = '\x1b[32m';
+  const white = '\x1b[37m';
+  const reset = '\x1b[0m';
+  
+  console.log(`${green}
+                                            
+                                            
+                          █████             
+                      ████     ████         
+                    ███           ███       
+                   ██              ███      
+                 ██                ████     
+               ███                 ████     
+              ███                  ████     
+            ███████               █████     
+          ███████████            █████      
+        ███████████████        ██████       
+       ██████████████████     █████         
+      █████████████████████ ██████          
+     ███████████████████████████            
+     █████████████████████████              
+     ████████████████████████               
+     ██████████████████████                 
+      ███████████████████                   
+       █████████████████                    
+         █████████████                      
+             █████      ${white}PumpAPI ${green}v1.0${reset}                    
+                                            
+                                            
+${reset}`);
+  
+  console.log(`\nServer running on port ${PORT}\n`);
+  const borderWidth = 59;
+  console.log(`${green}┌${'─'.repeat(borderWidth)}┐${reset}`);
+  console.log(`${green}│${reset}              Available Endpoints                          ${green}│${reset}`);
+  console.log(`${green}├${'─'.repeat(borderWidth)}┤${reset}`);
+  console.log(`${green}│${reset}  WebSocket:                                               ${green}│${reset}`);
+  const ws1 = `    - ws://localhost:${PORT}/ws/newpairs`;
+  const ws2 = `    - ws://localhost:${PORT}/ws/txs?bondingCurve=[address]`;
+  console.log(`${green}│${reset} ${ws1.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset} ${ws2.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset}${' '.repeat(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset}  HTTP:                                                   ${green}│${reset}`);
+  const http1 = `    - http://localhost:${PORT}/health`;
+  const http2 = `    - http://localhost:${PORT}/status`;
+  const http3 = `    - http://localhost:${PORT}/`;
+  console.log(`${green}│${reset} ${http1.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset} ${http2.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset} ${http3.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}└${'─'.repeat(borderWidth)}┘${reset}\n`);
+  console.log(`${white}┌${'─'.repeat(borderWidth)}┐${reset}`);
+  console.log(`${white}│${reset}              Connection Status                            ${white}│${reset}`);
+  console.log(`${white}├${'─'.repeat(borderWidth)}┤${reset}`);
+  console.log(`${white}│${reset}  New Pairs Clients: 0                                     ${white}│${reset}`);
+  console.log(`${white}│${reset}  Transaction Subscriptions: 0                             ${white}│${reset}`);
+  console.log(`${white}└${'─'.repeat(borderWidth)}┘${reset}\n`);
 });
 
-// WebSocket servers - use noServer to handle routing manually
 const wssNewPairs = new WebSocketServer({ noServer: true });
 const wssTransactions = new WebSocketServer({ noServer: true });
 
-// Handle WebSocket upgrade requests manually for both endpoints
 server.on('upgrade', (request, socket, head) => {
   const pathname = (request.url || '').split('?')[0];
   
@@ -37,7 +88,6 @@ server.on('upgrade', (request, socket, head) => {
       wssTransactions.emit('connection', ws, req);
     });
   } else {
-    // Unknown path - close connection
     socket.destroy();
   }
 });
@@ -51,17 +101,22 @@ wssNewPairs.on('connection', (ws, req) => {
     ip: req.socket.remoteAddress,
     path: req.url
   };
-  console.log(`✓ New WebSocket client connected from ${clientInfo.ip} to ${clientInfo.path}`);
-  console.log(`  Total clients: ${newPairsClients.size + 1}`);
   newPairsClients.add(ws);
+  console.log(`New WebSocket client connected from ${clientInfo.ip} to ${clientInfo.path}`);
+  console.log(`  Total new pairs clients: ${newPairsClients.size}`);
+  console.log(`  Transaction subscriptions: ${transactionSubscriptions.size}`);
+  console.log(`  Total transaction clients: ${Array.from(transactionSubscriptions.values()).reduce((sum, sub) => sum + sub.clients.size, 0)}\n`);
 
   ws.on('close', () => {
-    console.log(`✗ WebSocket client disconnected. Remaining: ${newPairsClients.size - 1}`);
     newPairsClients.delete(ws);
+    console.log(`WebSocket client disconnected. Remaining: ${newPairsClients.size}`);
+    console.log(`  Total new pairs clients: ${newPairsClients.size}`);
+    console.log(`  Transaction subscriptions: ${transactionSubscriptions.size}`);
+    console.log(`  Total transaction clients: ${Array.from(transactionSubscriptions.values()).reduce((sum, sub) => sum + sub.clients.size, 0)}\n`);
   });
 
   ws.on('error', (error) => {
-    console.error('✗ WebSocket error:', error);
+    console.error('WebSocket error:', error);
     newPairsClients.delete(ws);
   });
 
@@ -103,20 +158,17 @@ newPairsSubscription.onNewPair((event) => {
 
 newPairsSubscription.subscribe().catch(console.error);
 
-// Transaction subscriptions map: bondingCurve -> { subscription, clients }
 const transactionSubscriptions = new Map<string, {
   subscription: TransactionSubscription;
   clients: Set<WebSocket>;
 }>();
 
-// WebSocket handler for transactions
 wssTransactions.on('connection', async (ws, req) => {
-  console.log(`[DEBUG] ✓ Transaction WS connection handler called!`);
+  console.log(`[DEBUG] Transaction WS connection handler called!`);
   console.log(`[DEBUG] Request URL: ${req.url}`);
   console.log(`[DEBUG] Request method: ${req.method}`);
   console.log(`[DEBUG] Request headers:`, req.headers);
   
-  // Add error handler immediately
   ws.on('error', (error) => {
     console.error(`[DEBUG] WebSocket error:`, error);
   });
@@ -131,26 +183,20 @@ wssTransactions.on('connection', async (ws, req) => {
     
     console.log(`[DEBUG] Transaction WS connection. URL: ${urlString}`);
     
-    // Parse URL - handle both ?bondingCurve=value and ?=value formats
     try {
-      // First try to parse as standard URL
       const url = new URL(urlString, `http://${req.headers.host}`);
       bondingCurve = url.searchParams.get('bondingCurve');
       console.log(`[DEBUG] URL.parse result - bondingCurve from searchParams: ${bondingCurve}, search: ${url.search}`);
     } catch (error) {
       console.log(`[DEBUG] URL.parse failed:`, error);
-      // URL parsing failed, will try manual parsing below
     }
     
-    // If no bondingCurve param found, try manual parsing for ?=value format
     if (!bondingCurve) {
-      // Match ?=value format
       const match1 = urlString.match(/\/ws\/txs\?=([A-Za-z0-9]{32,44})/);
       if (match1) {
         bondingCurve = match1[1];
         console.log(`[DEBUG] Manual regex match1 found: ${bondingCurve}`);
       } else {
-        // Also try ?bondingCurve=value format manually
         const match2 = urlString.match(/\/ws\/txs\?bondingCurve=([A-Za-z0-9]{32,44})/);
         if (match2) {
           bondingCurve = match2[1];
@@ -162,7 +208,7 @@ wssTransactions.on('connection', async (ws, req) => {
     console.log(`[DEBUG] Final bondingCurve value: ${bondingCurve}`);
     
     if (!bondingCurve || !/^[A-Za-z0-9]{32,44}$/.test(bondingCurve)) {
-      console.error(`✗ Invalid bondingCurve parameter. URL: ${urlString}, Parsed: ${bondingCurve}`);
+      console.error(`Invalid bondingCurve parameter. URL: ${urlString}, Parsed: ${bondingCurve}`);
       ws.close(1008, 'Invalid bondingCurve parameter. Expected: /ws/txs?bondingCurve=[address] or /ws/txs?=[address]');
       return;
     }
@@ -173,15 +219,9 @@ wssTransactions.on('connection', async (ws, req) => {
       bondingCurve
     };
 
-    console.log(`✓ New transaction WebSocket client connected from ${clientInfo.ip}`);
-    console.log(`  Bonding curve: ${bondingCurve}`);
-    console.log(`  Path: ${req.url}`);
-
-    // Get or create subscription for this bonding curve
     let subscriptionData = transactionSubscriptions.get(bondingCurve);
     
     if (!subscriptionData) {
-      // Create new subscription
       const subscription = new TransactionSubscription(bondingCurve);
       await subscription.subscribe();
       
@@ -192,7 +232,6 @@ wssTransactions.on('connection', async (ws, req) => {
       
       transactionSubscriptions.set(bondingCurve, subscriptionData);
       
-      // Set up callback to broadcast to all clients for this bonding curve
       subscription.onTransaction((event: TransactionEvent) => {
         const message = JSON.stringify(event);
         subscriptionData!.clients.forEach((client) => {
@@ -206,15 +245,17 @@ wssTransactions.on('connection', async (ws, req) => {
         });
       });
       
-      console.log(`✓ Created new subscription for bonding curve: ${bondingCurve}`);
+      console.log(`Created new subscription for bonding curve: ${bondingCurve}`);
     }
 
-    // Add client to this subscription
     subscriptionData.clients.add(ws);
-    const totalClients = subscriptionData.clients.size;
-    console.log(`  Total clients for this bonding curve: ${totalClients}`);
+    console.log(`New transaction WebSocket client connected from ${clientInfo.ip}`);
+    console.log(`  Bonding curve: ${bondingCurve}`);
+    console.log(`  Total clients for this bonding curve: ${subscriptionData.clients.size}`);
+    console.log(`  Total new pairs clients: ${newPairsClients.size}`);
+    console.log(`  Transaction subscriptions: ${transactionSubscriptions.size}`);
+    console.log(`  Total transaction clients: ${Array.from(transactionSubscriptions.values()).reduce((sum, sub) => sum + sub.clients.size, 0)}\n`);
 
-    // Send welcome message
     const status = subscriptionData.subscription.getStatus();
     ws.send(JSON.stringify({
       type: 'connected',
@@ -228,37 +269,38 @@ wssTransactions.on('connection', async (ws, req) => {
       }
     }));
 
-    // Handle client disconnect
     ws.on('close', () => {
-      console.log(`✗ Transaction WebSocket client disconnected for bonding curve: ${bondingCurve}`);
       subscriptionData?.clients.delete(ws);
+      console.log(`Transaction WebSocket client disconnected for bonding curve: ${bondingCurve}`);
       
-      // If no more clients, unsubscribe for performance
       if (subscriptionData && subscriptionData.clients.size === 0) {
         console.log(`  No more clients for ${bondingCurve}, unsubscribing...`);
         try {
           subscriptionData.subscription.unsubscribe();
           transactionSubscriptions.delete(bondingCurve);
-          console.log(`  ✓ Unsubscribed and removed subscription for ${bondingCurve}`);
+          console.log(`  Unsubscribed and removed subscription for ${bondingCurve}`);
         } catch (error) {
-          console.error(`  ✗ Error unsubscribing:`, error);
+          console.error(`  Error unsubscribing:`, error);
         }
       }
+      
+      console.log(`  Total new pairs clients: ${newPairsClients.size}`);
+      console.log(`  Transaction subscriptions: ${transactionSubscriptions.size}`);
+      console.log(`  Total transaction clients: ${Array.from(transactionSubscriptions.values()).reduce((sum, sub) => sum + sub.clients.size, 0)}\n`);
     });
 
     ws.on('error', (error) => {
-      console.error('✗ Transaction WebSocket error:', error);
+      console.error('Transaction WebSocket error:', error);
       subscriptionData?.clients.delete(ws);
       
-      // If no more clients, unsubscribe for performance
       if (subscriptionData && subscriptionData.clients.size === 0) {
         console.log(`  No more clients for ${bondingCurve} after error, unsubscribing...`);
         try {
           subscriptionData.subscription.unsubscribe();
           transactionSubscriptions.delete(bondingCurve);
-          console.log(`  ✓ Unsubscribed and removed subscription for ${bondingCurve}`);
+          console.log(`  Unsubscribed and removed subscription for ${bondingCurve}`);
         } catch (unsubError) {
-          console.error(`  ✗ Error unsubscribing:`, unsubError);
+          console.error(`  Error unsubscribing:`, unsubError);
         }
       }
     });
@@ -268,12 +310,12 @@ wssTransactions.on('connection', async (ws, req) => {
     });
 
   } catch (error) {
-    console.error('✗ Error setting up transaction subscription:', error);
-    console.error('✗ Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+    console.error('Error setting up transaction subscription:', error);
+    console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
     try {
       ws.close(1011, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } catch (closeError) {
-      console.error('✗ Error closing WebSocket:', closeError);
+      console.error('Error closing WebSocket:', closeError);
     }
   }
 });
@@ -320,7 +362,6 @@ app.get('/status', (req, res) => {
   });
 });
 
-// Root endpoint
 app.get('/', (req, res) => {
   res.json({
     message: 'Pumpfun WebSocket API',

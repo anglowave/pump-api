@@ -3,14 +3,12 @@ import { BorshCoder, Idl } from '@coral-xyz/anchor';
 import pumpIdl from '../../config/idl/pump/idl.json';
 import pumpAmmIdl from '../../config/idl/pump_amm/idl.json';
 
-// Program IDs
 const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 const PUMP_AMM_PROGRAM_ID = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
 
-// Event discriminators from IDLs
-const TRADE_EVENT_DISCRIMINATOR = [189, 219, 127, 211, 78, 230, 97, 238]; // TradeEvent from pump
-const BUY_EVENT_DISCRIMINATOR = [103, 244, 82, 31, 44, 245, 119, 119]; // BuyEvent from pump_amm
-const SELL_EVENT_DISCRIMINATOR = [62, 47, 55, 10, 165, 3, 220, 42]; // SellEvent from pump_amm
+const TRADE_EVENT_DISCRIMINATOR = [189, 219, 127, 211, 78, 230, 97, 238];
+const BUY_EVENT_DISCRIMINATOR = [103, 244, 82, 31, 44, 245, 119, 119];
+const SELL_EVENT_DISCRIMINATOR = [62, 47, 55, 10, 165, 3, 220, 42];
 
 export interface TransactionEvent {
   type: 'buy' | 'sell';
@@ -29,10 +27,6 @@ export interface TransactionSubscriptionStatus {
 
 export type TransactionCallback = (event: TransactionEvent) => void;
 
-/**
- * TransactionSubscription handles subscribing to bonding curve account changes
- * and notifying callbacks when buy/sell transactions occur
- */
 export class TransactionSubscription {
   private connection: Connection;
   private bondingCurve: PublicKey;
@@ -48,7 +42,6 @@ export class TransactionSubscription {
 
   constructor(bondingCurve: string | PublicKey, rpcUrl?: string) {
     const url = rpcUrl || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-    // Use 'finalized' commitment as requested
     this.connection = new Connection(url, 'finalized');
     this.bondingCurve = typeof bondingCurve === 'string' 
       ? new PublicKey(bondingCurve) 
@@ -64,9 +57,6 @@ export class TransactionSubscription {
     };
   }
 
-  /**
-   * Determine program type and IDL from bonding curve account owner
-   */
   private async determineProgramType(): Promise<void> {
     try {
       const accountInfo = await this.connection.getAccountInfo(this.bondingCurve);
@@ -77,7 +67,6 @@ export class TransactionSubscription {
 
       this.programId = accountInfo.owner;
       
-      // Determine which program owns this account
       if (this.programId.equals(PUMP_PROGRAM_ID)) {
         this.programType = 'pump';
         this.coder = new BorshCoder(pumpIdl as Idl);
@@ -91,16 +80,13 @@ export class TransactionSubscription {
       this.status.programId = this.programId.toString();
       this.status.programType = this.programType;
       
-      console.log(`✓ Determined program type: ${this.programType} (${this.programId.toString()})`);
+      console.log(`Determined program type: ${this.programType} (${this.programId.toString()})`);
     } catch (error) {
       console.error('Error determining program type:', error);
       throw error;
     }
   }
 
-  /**
-   * Helper function to decode event from log data
-   */
   private decodeEvent(logData: string, eventType: 'TradeEvent' | 'BuyEvent' | 'SellEvent'): any | null {
     if (!this.coder) {
       return null;
@@ -116,7 +102,6 @@ export class TransactionSubscription {
       const discriminator = Array.from(dataBuffer.slice(0, 8));
       const eventData = dataBuffer.slice(8);
       
-      // Check discriminator matches expected event
       let expectedDiscriminator: number[];
       if (eventType === 'TradeEvent') {
         expectedDiscriminator = TRADE_EVENT_DISCRIMINATOR;
@@ -132,11 +117,9 @@ export class TransactionSubscription {
         return null;
       }
       
-      // Try to decode using the coder
       try {
         const eventsCoder = this.coder.events as any;
         
-        // Try using events layouts
         if (eventsCoder && eventsCoder.layouts && eventsCoder.layouts[eventType]) {
           const eventLayout = eventsCoder.layouts[eventType];
           const decoded = eventLayout.decode(eventData);
@@ -145,7 +128,6 @@ export class TransactionSubscription {
           }
         }
         
-        // Try using decode method with full buffer
         if (eventsCoder && typeof eventsCoder.decode === 'function') {
           try {
             const decoded = eventsCoder.decode(dataBuffer);
@@ -153,7 +135,6 @@ export class TransactionSubscription {
               return decoded.data;
             }
           } catch (decodeError) {
-            // Continue to next method
           }
         }
       } catch (error) {
@@ -166,9 +147,6 @@ export class TransactionSubscription {
     }
   }
 
-  /**
-   * Parse logs for buy/sell events
-   */
   private parseLogsForEvents(logs: string[]): Array<{ type: 'buy' | 'sell'; data: any }> {
     const events: Array<{ type: 'buy' | 'sell'; data: any }> = [];
     
@@ -177,12 +155,10 @@ export class TransactionSubscription {
     }
 
     for (const log of logs) {
-      // Anchor events are logged as "Program data: <base64>"
       if (log.startsWith('Program data: ')) {
         const base64Data = log.replace('Program data: ', '');
         
         if (this.programType === 'pump') {
-          // Pump uses TradeEvent with is_buy field
           const eventData = this.decodeEvent(base64Data, 'TradeEvent');
           if (eventData) {
             events.push({
@@ -191,7 +167,6 @@ export class TransactionSubscription {
             });
           }
         } else if (this.programType === 'pump_amm') {
-          // Pump AMM uses separate BuyEvent and SellEvent
           const buyEvent = this.decodeEvent(base64Data, 'BuyEvent');
           if (buyEvent) {
             events.push({ type: 'buy', data: buyEvent });
@@ -208,21 +183,16 @@ export class TransactionSubscription {
     return events;
   }
 
-  /**
-   * Decode bonding curve account data using IDL
-   */
   private decodeAccountData(accountData: Buffer): any | null {
     if (!this.coder) {
       return null;
     }
 
     try {
-      // Account data starts with an 8-byte discriminator
       if (accountData.length < 8) {
         return null;
       }
 
-      // Try to decode using accounts coder
       const accountsCoder = this.coder.accounts as any;
       
       if (accountsCoder && accountsCoder.layouts && accountsCoder.layouts['BondingCurve']) {
@@ -233,7 +203,6 @@ export class TransactionSubscription {
         }
       }
       
-      // Try using decode method
       if (accountsCoder && typeof accountsCoder.decode === 'function') {
         try {
           const decoded = accountsCoder.decode(accountData);
@@ -241,7 +210,6 @@ export class TransactionSubscription {
             return decoded.data;
           }
         } catch (decodeError) {
-          // Continue to next method
         }
       }
       
@@ -252,9 +220,6 @@ export class TransactionSubscription {
     }
   }
 
-  /**
-   * Subscribe to program logs for buy/sell events and account changes for account data
-   */
   async subscribe(): Promise<void> {
     if (this.status.subscribed) {
       throw new Error('Already subscribed');
@@ -263,26 +228,21 @@ export class TransactionSubscription {
     console.log(`Subscribing to transactions for bonding curve: ${this.bondingCurve.toString()}`);
     
     try {
-      // First, determine which program owns this account
       await this.determineProgramType();
       
       if (!this.programType || !this.coder || !this.programId) {
         throw new Error('Failed to determine program type');
       }
 
-      // Subscribe to account changes to decode account data (no transaction fetching!)
       this.accountListenerId = this.connection.onAccountChange(
         this.bondingCurve,
         (accountInfo, context) => {
-          // Decode account data from the subscription notification
           if (accountInfo.data && Buffer.isBuffer(accountInfo.data)) {
             const decodedAccountData = this.decodeAccountData(accountInfo.data);
             if (decodedAccountData) {
-              // Convert lamports to SOL (1 SOL = 1,000,000,000 lamports)
               const lamports = accountInfo.lamports || 0;
               const sol = lamports / 1_000_000_000;
               
-              // Store latest account data for use in transaction events
               this.latestAccountData = {
                 data: decodedAccountData,
                 lamports: lamports,
@@ -309,20 +269,15 @@ export class TransactionSubscription {
         'finalized'
       );
 
-      // Subscribe to program logs to detect buy/sell events directly (like newpairs does)
-      // This avoids fetching transactions and causing 429 errors
       this.logsListenerId = this.connection.onLogs(
         this.programId,
         (logs, context) => {
-          // Parse logs for buy/sell events
           const events = this.parseLogsForEvents(logs.logs);
           
           for (const event of events) {
             this.status.eventCount++;
             this.status.lastEventTime = new Date();
             
-            // Extract SOL amount from event data and convert to SOL
-            // TradeEvent (pump) has sol_amount, BuyEvent/SellEvent (pump_amm) have quote_amount_in/quote_amount_out
             let solAmountLamports = 0;
             if (this.programType === 'pump') {
               solAmountLamports = event.data?.sol_amount || 0;
@@ -333,22 +288,20 @@ export class TransactionSubscription {
                 solAmountLamports = event.data?.quote_amount_out || 0;
               }
             }
-            const solAmount = solAmountLamports / 1_000_000_000; // Convert lamports to SOL
+            const solAmount = solAmountLamports / 1_000_000_000;
             
-            console.log(`\n✓ ${event.type.toUpperCase()} event received:`, {
+            console.log(`\n${event.type.toUpperCase()} event received:`, {
               signature: logs.signature,
               slot: context.slot,
               amount: `${solAmount.toFixed(9)} SOL`,
               bondingCurve: this.bondingCurve.toString()
             });
 
-            // Create the event object with only type and amount
             const transactionEvent: TransactionEvent = {
               type: event.type,
               amount: solAmount
             };
 
-            // Notify all callbacks
             this.notifyCallbacks(transactionEvent);
           }
         },
@@ -358,14 +311,14 @@ export class TransactionSubscription {
       this.status.subscribed = true;
       this.status.listenerId = this.logsListenerId;
       this.subscriptionId = this.logsListenerId;
-      console.log(`✓ Subscribed to program logs with listener ID: ${this.logsListenerId}`);
-      console.log(`✓ Subscribed to account changes with listener ID: ${this.accountListenerId}`);
-      console.log(`✓ Monitoring bonding curve: ${this.bondingCurve.toString()}`);
-      console.log(`✓ Program: ${this.programType} (${this.programId.toString()})`);
+      console.log(`Subscribed to program logs with listener ID: ${this.logsListenerId}`);
+      console.log(`Subscribed to account changes with listener ID: ${this.accountListenerId}`);
+      console.log(`Monitoring bonding curve: ${this.bondingCurve.toString()}`);
+      console.log(`Program: ${this.programType} (${this.programId.toString()})`);
       console.log('Waiting for buy/sell transactions...\n');
     } catch (error) {
       this.status.error = error;
-      console.error('✗ Error subscribing to transactions:', error);
+      console.error('Error subscribing to transactions:', error);
       if (error instanceof Error) {
         console.error('Error details:', error.message);
         console.error('Stack:', error.stack);
@@ -374,9 +327,6 @@ export class TransactionSubscription {
     }
   }
 
-  /**
-   * Unsubscribe from account changes
-   */
   unsubscribe(): void {
     if (this.subscriptionId !== null) {
       try {
@@ -390,21 +340,14 @@ export class TransactionSubscription {
     }
   }
 
-  /**
-   * Add a callback to be notified when transactions occur
-   */
   onTransaction(callback: TransactionCallback): () => void {
     this.callbacks.add(callback);
     
-    // Return unsubscribe function
     return () => {
       this.callbacks.delete(callback);
     };
   }
 
-  /**
-   * Notify all callbacks of a transaction event
-   */
   private notifyCallbacks(event: TransactionEvent): void {
     this.callbacks.forEach((callback) => {
       try {
@@ -415,23 +358,14 @@ export class TransactionSubscription {
     });
   }
 
-  /**
-   * Get current subscription status
-   */
   getStatus(): TransactionSubscriptionStatus {
     return { ...this.status };
   }
 
-  /**
-   * Get the connection instance
-   */
   getConnection(): Connection {
     return this.connection;
   }
 
-  /**
-   * Get the bonding curve address
-   */
   getBondingCurve(): PublicKey {
     return this.bondingCurve;
   }
