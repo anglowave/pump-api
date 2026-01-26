@@ -14,10 +14,7 @@ const SELL_EVENT_DISCRIMINATOR = [62, 47, 55, 10, 165, 3, 220, 42]; // SellEvent
 
 export interface TransactionEvent {
   type: 'buy' | 'sell';
-  bondingCurve: string;
-  data: any;
-  signature: string;
-  slot: number;
+  amount: number; // Amount in SOL
 }
 
 export interface TransactionSubscriptionStatus {
@@ -324,24 +321,31 @@ export class TransactionSubscription {
             this.status.eventCount++;
             this.status.lastEventTime = new Date();
             
+            // Extract SOL amount from event data and convert to SOL
+            // TradeEvent (pump) has sol_amount, BuyEvent/SellEvent (pump_amm) have quote_amount_in/quote_amount_out
+            let solAmountLamports = 0;
+            if (this.programType === 'pump') {
+              solAmountLamports = event.data?.sol_amount || 0;
+            } else if (this.programType === 'pump_amm') {
+              if (event.type === 'buy') {
+                solAmountLamports = event.data?.quote_amount_in || 0;
+              } else {
+                solAmountLamports = event.data?.quote_amount_out || 0;
+              }
+            }
+            const solAmount = solAmountLamports / 1_000_000_000; // Convert lamports to SOL
+            
             console.log(`\n✓ ${event.type.toUpperCase()} event received:`, {
               signature: logs.signature,
               slot: context.slot,
+              amount: `${solAmount.toFixed(9)} SOL`,
               bondingCurve: this.bondingCurve.toString()
             });
 
-            // Create the event object with decoded account data if available
+            // Create the event object with only type and amount
             const transactionEvent: TransactionEvent = {
               type: event.type,
-              bondingCurve: this.bondingCurve.toString(),
-              data: {
-                ...event.data,
-                accountData: this.latestAccountData?.data || null, // Include latest decoded account state
-                lamports: this.latestAccountData?.lamports || 0,
-                sol: this.latestAccountData?.sol || 0
-              },
-              signature: logs.signature, // Signature from logs
-              slot: context.slot
+              amount: solAmount
             };
 
             // Notify all callbacks
