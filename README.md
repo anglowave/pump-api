@@ -8,16 +8,7 @@
 ╚═╝      ╚═════╝ ╚═╝     ╚═╝╚═╝         ╚═╝  ╚═╝╚═╝     ╚═╝
 ```
 
-Real-time WebSocket API for monitoring PumpAPI token pairs and transactions on Solana.
-
-## Features
-
-- 🔥 **Real-time New Pairs**: Stream new token pair creation events (`create` and `create_v2`)
-- 💰 **Transaction Monitoring**: Track buy/sell transactions for specific bonding curves
-- ⚡ **High Performance**: Uses direct program log subscriptions (no transaction fetching)
-- 🎯 **Dual Program Support**: Automatically detects and handles both `pump` and `pump_amm` programs
-- 📊 **Account Data Decoding**: Decodes bonding curve account state using Anchor IDLs
-- 🚀 **Auto Cleanup**: Automatically unsubscribes when clients disconnect
+High-level API for [pump.fun](https://pump.fun) and pump_amm programs on Solana. Provides WebSocket subscriptions for real-time event monitoring and REST endpoints for token data retrieval.
 
 ## Installation
 
@@ -33,35 +24,19 @@ Set your Solana RPC URL in `.env`:
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 ```
 
-Or use the default public RPC endpoint.
+If not set, defaults to `https://api.mainnet-beta.solana.com`.
 
 ## Usage
 
-### Start the Server
+Start the server:
 
 ```bash
 npm start
 ```
 
-The server will start on port `3000` by default.
+Server runs on port `3000` by default (configurable via `PORT` environment variable).
 
-## API Endpoints
-
-### Health Check
-
-```http
-GET /health
-```
-
-Returns server health status.
-
-### Status
-
-```http
-GET /status
-```
-
-Returns detailed status of all subscriptions.
+## REST API
 
 ### Token Info
 
@@ -69,7 +44,10 @@ Returns detailed status of all subscriptions.
 GET /info/:mint
 ```
 
-Fetches complete token information including metadata from a mint address.
+Fetches token information including metadata and bonding curve data.
+
+**Parameters:**
+- `mint` (path): Token mint address (Solana public key, 32-44 characters)
 
 **Example:**
 ```bash
@@ -77,6 +55,7 @@ curl http://localhost:3000/info/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
 ```
 
 **Response:**
+
 ```json
 {
   "mint": "F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump",
@@ -94,15 +73,16 @@ curl http://localhost:3000/info/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
 }
 ```
 
-**Note:** Metadata is fetched from Token-2022 extensions. If bonding curve decoding fails but metadata is available, the response will still include metadata with default values for bonding curve fields.
-
 ### Derive Bonding Curve
 
 ```http
 GET /info/derive/:mint
 ```
 
-Derives and returns the bonding curve PDA address from a mint address.
+Derives the bonding curve PDA address from a mint address using the pump.fun program seeds.
+
+**Parameters:**
+- `mint` (path): Token mint address
 
 **Example:**
 ```bash
@@ -116,22 +96,33 @@ curl http://localhost:3000/info/derive/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrep
 }
 ```
 
-This endpoint only derives the bonding curve address without fetching or decoding account data, making it fast and reliable.
+**Note:** This endpoint performs PDA derivation only. No account data is fetched or decoded.
 
-## WebSocket Endpoints
+### Health Check
+
+```http
+GET /health
+```
+
+Returns server health status and subscription metrics.
+
+### Status
+
+```http
+GET /status
+```
+
+Returns detailed status of all active subscriptions, connection counts, and program information.
+
+## WebSocket API
 
 ### New Pairs Stream
 
-Connect to stream all new token pair creations:
-
 ```javascript
-const ws = new WebSocket('ws://localhost:3000/ws/newpairs');
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log('New pair:', data);
-};
+ws://localhost:3000/ws/newpairs
 ```
+
+Subscribes to `CreateEvent` events from the pump.fun program. Emits events when new token pairs are created via `create` or `create_v2` instructions.
 
 **Event Format:**
 ```json
@@ -159,35 +150,38 @@ ws.onmessage = (event) => {
 }
 ```
 
-### Transaction Stream
-
-Connect to stream buy/sell transactions for a specific bonding curve:
-
+**Example:**
 ```javascript
-const bondingCurve = '9wcD5EBuHPj9r2Qb1ks5KQTzYPqDxNLCX1wnegY6w562';
-const ws = new WebSocket(`ws://localhost:3000/ws/txs?bondingCurve=${bondingCurve}`);
-
+const ws = new WebSocket('ws://localhost:3000/ws/newpairs');
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
-  console.log('Transaction:', data);
+  // Handle new pair event
 };
 ```
 
-**Alternative Query Format:**
+### Transaction Stream
+
 ```javascript
-// Also supports ?= format
-const ws = new WebSocket(`ws://localhost:3000/ws/txs?=${bondingCurve}`);
+ws://localhost:3000/ws/txs?bondingCurve=<address>
+ws://localhost:3000/ws/txs?=<address>
 ```
+
+Subscribes to trade events for a specific bonding curve. Automatically detects program type (pump or pump_amm) and decodes events accordingly.
+
+**Parameters:**
+- `bondingCurve` (query): Bonding curve PDA address (required)
 
 **Event Format:**
 ```json
 {
   "type": "buy" | "sell",
-  "amount": 0.123456789
+  "amount": 0.123456789,
+  "signature": "5j7s8K9L...",
+  "timestamp": 1234567890
 }
 ```
 
-**Connection Message:**
+**Connection Response:**
 ```json
 {
   "type": "connected",
@@ -202,21 +196,43 @@ const ws = new WebSocket(`ws://localhost:3000/ws/txs?=${bondingCurve}`);
 }
 ```
 
+**Example:**
+```javascript
+const bondingCurve = '9wcD5EBuHPj9r2Qb1ks5KQTzYPqDxNLCX1wnegY6w562';
+const ws = new WebSocket(`ws://localhost:3000/ws/txs?bondingCurve=${bondingCurve}`);
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  // Handle transaction event
+};
+```
+
 ## Architecture
 
-### New Pairs Subscription
-- Uses `connection.onLogs()` to subscribe to program logs
-- Filters for `CreateEvent` discriminators
-- Distinguishes between `create` and `create_v2` instructions
-- Commitment level: `processed` (faster event detection)
+### Event Subscription
 
-### Transaction Subscription
-- Uses `connection.onLogs()` for buy/sell event detection
-- Uses `connection.onAccountChange()` for account state updates
-- Automatically determines program type (`pump` or `pump_amm`) from bonding curve owner
-- Decodes account data using Anchor IDLs
-- Commitment level: `finalized`
-- **No transaction fetching** - uses only subscription data (prevents rate limiting)
+The API uses Solana WebSocket subscriptions to monitor program logs:
+
+- **New Pairs**: Subscribes to pump.fun program (`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`) logs and filters for `CreateEvent` discriminators
+- **Transactions**: Subscribes to program logs based on bonding curve account owner, automatically determining whether to use pump or pump_amm IDL
+
+### Account Decoding
+
+Bonding curve accounts are decoded using Anchor IDLs:
+- Pump program: `config/idl/pump/idl.json`
+- Pump AMM program: `config/idl/pump_amm/idl.json`
+
+Account data is decoded using BorshCoder from `@coral-xyz/anchor`.
+
+### PDA Derivation
+
+Bonding curve addresses are derived using:
+- Seeds: `["bonding-curve", mint]`
+- Program: `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`
+
+### Commitment Levels
+
+- New pairs: `processed` (faster event detection)
+- Transactions: `finalized` (ensures transaction finality)
 
 ## Development
 
