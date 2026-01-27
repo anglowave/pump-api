@@ -2,7 +2,7 @@ import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { PublicKey } from '@solana/web3.js';
 import { NewPairsSubscription } from './lib/newpairs';
-import { TransactionSubscription, TransactionEvent } from './lib/transactions';
+import { TransactionSubscription, TransactionStreamEvent } from './lib/transactions';
 import { getTokenInfo, getBondingCurveFromMint, getTopHolders } from './lib/tokeninfo';
 
 const app = express();
@@ -250,7 +250,7 @@ wssTransactions.on('connection', async (ws, req) => {
       
       transactionSubscriptions.set(bondingCurve, subscriptionData);
       
-      subscription.onTransaction((event: TransactionEvent) => {
+      subscription.onTransaction((event: TransactionStreamEvent) => {
         const message = JSON.stringify(event);
         subscriptionData!.clients.forEach((client) => {
           if (client.readyState === 1) {
