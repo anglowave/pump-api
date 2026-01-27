@@ -28,7 +28,6 @@ export interface BondingCurveUpdateEventData {
   is_mayhem_mode: boolean;
 }
 
-/** Event emitted on each bonding curve account update (accountSubscribe). */
 export interface BondingCurveUpdateEvent {
   type: 'bonding_curve_update';
   bondingCurve: string;
@@ -38,16 +37,14 @@ export interface BondingCurveUpdateEvent {
   sol: number;
 }
 
-/** Buy or sell inferred from bonding curve account data (reserve deltas) or from program logs (TradeEvent). */
 export interface TradeEvent {
   type: 'buy' | 'sell';
-  amount: number;       // SOL amount (from reserve delta or TradeEvent.sol_amount)
+  amount: number;       
   bonding_curve: string;
   slot: number;
-  /** Approx token amount from reserve delta or TradeEvent; empty if not derived. */
   token_amount_delta?: string;
-  /** Trader wallet (from program TradeEvent logs when available). */
   user?: string;
+  signature?: string;
 }
 
 export type TransactionStreamEvent = TradeEvent;
@@ -115,12 +112,30 @@ export function decodeBondingCurveAccountValue(
   };
 }
 
-/** Decoded TradeEvent from pump program logs (user is the trader pubkey). */
 interface PumpTradeEventData {
-  is_buy: boolean;
+  mint: { toBase58(): string } | Uint8Array;
   sol_amount: bigint | number;
-  token_amount?: bigint | number;
+  token_amount: bigint | number;
+  is_buy: boolean;
   user: { toBase58(): string } | Uint8Array;
+  timestamp: bigint | number;
+  virtual_sol_reserves: bigint | number;
+  virtual_token_reserves: bigint | number;
+  real_sol_reserves: bigint | number;
+  real_token_reserves: bigint | number;
+  fee_recipient: { toBase58(): string } | Uint8Array;
+  fee_basis_points: bigint | number;
+  fee: bigint | number;
+  creator: { toBase58(): string } | Uint8Array;
+  creator_fee_basis_points: bigint | number;
+  creator_fee: bigint | number;
+  track_volume: boolean;
+  total_unclaimed_tokens: bigint | number;
+  total_claimed_tokens: bigint | number;
+  current_sol_volume: bigint | number;
+  last_update_timestamp: bigint | number;
+  ix_name: string;
+  mayhem_mode: boolean;
 }
 
 export class TransactionSubscription {
@@ -132,8 +147,8 @@ export class TransactionSubscription {
   private callbacks: Set<TransactionCallback> = new Set();
   private programId: PublicKey | null = null;
   private eventParser: EventParser | null = null;
-  /** Previous decoded reserves to infer buy/sell from account data deltas. */
   private prevReserves: { virtual_sol_reserves: number; virtual_token_reserves: number } | null = null;
+  private pendingTrades: Map<number, { event: TradeEvent; timestamp: number }> = new Map();
 
   constructor(bondingCurve: string | PublicKey, rpcUrl?: string) {
     const url = rpcUrl || process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
@@ -152,7 +167,6 @@ export class TransactionSubscription {
     };
   }
 
-  /** Ensures the account is owned by the pump program (required for BondingCurve decoding). */
   private async ensurePumpBondingCurve(): Promise<void> {
     const accountInfo = await this.connection.getAccountInfo(this.bondingCurve);
     if (!accountInfo) {
@@ -167,10 +181,8 @@ export class TransactionSubscription {
     this.programId = accountInfo.owner;
     this.status.programId = this.programId.toString();
     this.status.programType = 'pump';
-    console.log(`Bonding curve confirmed as pump program: ${this.bondingCurve.toString()}`);
   }
 
-  /** Normalize accountNotification / accountSubscribe value.data to Buffer. Supports Buffer or RPC form [base64, "base64"]. */
   private dataToBuffer(data: Buffer | [string, string] | unknown): Buffer | null {
     if (Buffer.isBuffer(data)) return data;
     if (Array.isArray(data) && data.length >= 2 && data[1] === 'base64' && typeof data[0] === 'string') {
@@ -179,12 +191,10 @@ export class TransactionSubscription {
     return null;
   }
 
-  /** Decode BondingCurve account data using pump IDL. Anchor 0.32 BorshAccountsCoder has decode(name, data), not .layouts. */
   private decodeAccountData(accountData: Buffer): BondingCurveDecoded | null {
     if (accountData.length < 8) return null;
     const accounts = PUMP_CODER.accounts;
     if (!accounts || typeof (accounts as { decode?: (n: string, d: Buffer) => unknown }).decode !== 'function') {
-      console.error('[decodeAccountData] coder.accounts.decode not available');
       return null;
     }
     try {
@@ -193,45 +203,156 @@ export class TransactionSubscription {
         return decoded;
       }
     } catch (err) {
-      console.warn('[decodeAccountData] accounts.decode threw:', err);
     }
     return null;
   }
 
-  /** Parse program logs for TradeEvent and emit trade with user when present. */
-  private handleLogs(logs: string[], context: { slot: number }): void {
-    if (!this.eventParser) return;
+  private handleAccountChange(accountInfo: { data: Buffer | [string, string]; lamports: number }, context: { slot: number }): void {
     const bondingCurveStr = this.bondingCurve.toString();
+    
     try {
-      for (const ev of this.eventParser.parseLogs(logs, false)) {
-        if (ev.name !== 'TradeEvent') continue;
-        const d = ev.data as PumpTradeEventData;
-        const amountSol = toNum(d.sol_amount) / 1_000_000_000;
-        const userStr =
-          typeof d.user === 'object' && d.user != null && 'toBase58' in d.user
-            ? (d.user as { toBase58(): string }).toBase58()
-            : new PublicKey(d.user as Uint8Array).toBase58();
-        const event: TradeEvent = {
-          type: d.is_buy ? 'buy' : 'sell',
-          amount: amountSol,
-          bonding_curve: bondingCurveStr,
-          slot: context.slot,
-          token_amount_delta: d.token_amount != null ? String(toNum(d.token_amount)) : undefined,
-          user: userStr
-        };
-        this.status.eventCount++;
-        this.status.lastEventTime = new Date();
-        this.notifyCallbacks(event);
+      const accountData = this.dataToBuffer(accountInfo.data);
+      if (!accountData) {
+        return;
+      }
+      
+      const decoded = this.decodeAccountData(accountData);
+      if (!decoded) {
+        return;
+      }
+      
+      if (this.prevReserves) {
+        const prevSol = this.prevReserves.virtual_sol_reserves;
+        const prevToken = this.prevReserves.virtual_token_reserves;
+        const currSol = toNum(decoded.virtual_sol_reserves);
+        const currToken = toNum(decoded.virtual_token_reserves);
+        
+        const solDelta = currSol - prevSol;
+        const tokenDelta = prevToken - currToken;
+        
+        if (solDelta > 0 && tokenDelta > 0) {
+          const amountSol = solDelta / 1_000_000_000;
+          const creatorStr = typeof decoded.creator === 'object' && decoded.creator != null && 'toBase58' in decoded.creator
+            ? (decoded.creator as { toBase58(): string }).toBase58()
+            : new PublicKey(decoded.creator as Uint8Array).toBase58();
+          const event: TradeEvent = {
+            type: 'buy',
+            bonding_curve: bondingCurveStr,
+            amount: amountSol,
+            slot: context.slot,
+            token_amount_delta: String(tokenDelta),
+            user: creatorStr,
+          };
+          
+          this.pendingTrades.set(context.slot, { event, timestamp: Date.now() });
+          
+          setTimeout(() => {
+            const pending = this.pendingTrades.get(context.slot);
+            if (pending) {
+              this.pendingTrades.delete(context.slot);
+              this.status.eventCount++;
+              this.status.lastEventTime = new Date();
+              this.notifyCallbacks(pending.event);
+            }
+          }, 2000);
+        } else if (solDelta < 0 && tokenDelta < 0) {
+          const amountSol = Math.abs(solDelta) / 1_000_000_000;
+          const event: TradeEvent = {
+            type: 'sell',
+            amount: amountSol,
+            bonding_curve: bondingCurveStr,
+            slot: context.slot,
+            token_amount_delta: String(Math.abs(tokenDelta)),
+          };
+          
+          this.pendingTrades.set(context.slot, { event, timestamp: Date.now() });
+          
+          setTimeout(() => {
+            const pending = this.pendingTrades.get(context.slot);
+            if (pending) {
+              this.pendingTrades.delete(context.slot);
+              this.status.eventCount++;
+              this.status.lastEventTime = new Date();
+              this.notifyCallbacks(pending.event);
+            }
+          }, 2000);
+        }
+      }
+      
+      this.prevReserves = {
+        virtual_sol_reserves: toNum(decoded.virtual_sol_reserves),
+        virtual_token_reserves: toNum(decoded.virtual_token_reserves)
+      };
+      
+      const now = Date.now();
+      for (const [slot, pending] of this.pendingTrades.entries()) {
+        if (now - pending.timestamp > 10000) {
+          this.pendingTrades.delete(slot);
+        }
       }
     } catch (err) {
-      console.warn('[handleLogs] parse/emit error:', err);
     }
   }
 
-  /**
-   * Subscribes via onLogs(mentions bonding curve): parses pump TradeEvent from program logs
-   * and emits one event per trade with type, amount, bonding_curve, slot, token_amount_delta, and user (trader).
-   */
+  private handleLogs(logs: { logs: string[]; err?: any }, context: { slot: number; signature?: string }): void {
+    if (!this.eventParser) return;
+    
+    try {
+      const parsedEvents = Array.from(this.eventParser.parseLogs(logs.logs, false));
+      const bondingCurveStr = this.bondingCurve.toString();
+      
+      for (const ev of parsedEvents) {
+        if (ev.name !== 'TradeEvent') continue;
+        
+        const d = ev.data as PumpTradeEventData;
+        const creatorStr =
+          typeof d.creator === 'object' && d.creator != null && 'toBase58' in d.creator
+            ? (d.creator as { toBase58(): string }).toBase58()
+            : new PublicKey(d.creator as Uint8Array).toBase58();
+        
+        const amountSol = toNum(d.sol_amount) / 1_000_000_000;
+        
+        let matched = false;
+        for (let slotOffset = -5; slotOffset <= 5; slotOffset++) {
+          const checkSlot = context.slot + slotOffset;
+          const pending = this.pendingTrades.get(checkSlot);
+          if (pending) {
+            const enrichedEvent: TradeEvent = {
+              ...pending.event,
+              user: creatorStr,
+              signature: context.signature,
+              amount: amountSol
+            };
+            
+            this.pendingTrades.delete(checkSlot);
+            this.status.eventCount++;
+            this.status.lastEventTime = new Date();
+            this.notifyCallbacks(enrichedEvent);
+            matched = true;
+            break;
+          }
+        }
+        
+        if (!matched) {
+          const event: TradeEvent = {
+            type: d.is_buy ? 'buy' : 'sell',
+            amount: amountSol,
+            bonding_curve: bondingCurveStr,
+            slot: context.slot,
+            token_amount_delta: String(toNum(d.token_amount)),
+            user: creatorStr,
+            signature: context.signature
+          };
+          
+          this.status.eventCount++;
+          this.status.lastEventTime = new Date();
+          this.notifyCallbacks(event);
+        }
+      }
+    } catch (err) {
+    }
+  }
+
   async subscribe(): Promise<void> {
     if (this.status.subscribed) {
       throw new Error('Already subscribed');
@@ -240,36 +361,64 @@ export class TransactionSubscription {
     try {
       await this.ensurePumpBondingCurve();
       this.eventParser = new EventParser(PUMP_PROGRAM_ID, PUMP_CODER);
-
+      
+      const bondingCurveStr = this.bondingCurve.toString();
+      
+      const initialAccountInfo = await this.connection.getAccountInfo(this.bondingCurve, 'finalized');
+      if (initialAccountInfo) {
+        const initialDecoded = this.decodeAccountData(initialAccountInfo.data);
+        if (initialDecoded) {
+          this.prevReserves = {
+            virtual_sol_reserves: toNum(initialDecoded.virtual_sol_reserves),
+            virtual_token_reserves: toNum(initialDecoded.virtual_token_reserves)
+          };
+        }
+      }
+      
+      this.accountListenerId = this.connection.onAccountChange(
+        this.bondingCurve,
+        (accountInfo, context) => {
+          const accountData: Buffer | [string, string] | unknown = accountInfo.data;
+          this.handleAccountChange(
+            {
+              data: accountData as Buffer | [string, string],
+              lamports: accountInfo.lamports
+            },
+            { slot: context.slot }
+          );
+        },
+        'finalized'
+      );
+      
       this.logsListenerId = this.connection.onLogs(
         this.bondingCurve,
-        (logs, ctx) => this.handleLogs(logs.logs, { slot: ctx.slot }),
+        (logs, ctx) => {
+          const signature = (ctx as any).signature || (ctx as any).transaction?.signatures?.[0];
+          this.handleLogs(logs, { slot: ctx.slot, signature });
+        },
         'finalized'
       );
 
       this.status.subscribed = true;
-      this.status.listenerId = this.logsListenerId;
+      this.status.listenerId = this.accountListenerId;
     } catch (error) {
       this.status.error = error;
-      console.error('Error subscribing to transaction logs (onLogs):', error);
-      if (error instanceof Error) {
-        console.error('Error details:', error.message);
-        console.error('Error stack:', error.stack);
-      }
       throw error;
     }
   }
 
   unsubscribe(): void {
+    if (this.accountListenerId !== null) {
+      this.connection.removeAccountChangeListener(this.accountListenerId).catch(() => {});
+      this.accountListenerId = null;
+    }
     if (this.logsListenerId !== null) {
-      this.connection.removeOnLogsListener(this.logsListenerId).catch((err) => {
-        console.error('Error removing onLogs listener:', err);
-      });
+      this.connection.removeOnLogsListener(this.logsListenerId).catch(() => {});
       this.logsListenerId = null;
     }
-    this.accountListenerId = null;
     this.prevReserves = null;
     this.eventParser = null;
+    this.pendingTrades.clear();
     this.status.subscribed = false;
     this.status.listenerId = null;
   }
@@ -286,7 +435,6 @@ export class TransactionSubscription {
       try {
         callback(event);
       } catch (error) {
-        console.error('Error in transaction callback:', error);
       }
     });
   }
