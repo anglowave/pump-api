@@ -8,6 +8,35 @@ import { getTokenInfo, getBondingCurveFromMint, getTopHolders } from './lib/toke
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Cache for top holders (mint -> { data, timestamp })
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+const topHoldersCache = new Map<string, CacheEntry<any[]>>();
+const CACHE_TTL = 60000; // 60 seconds cache TTL
+
+function getCachedTopHolders(mint: string): any[] | null {
+  const entry = topHoldersCache.get(mint);
+  if (!entry) return null;
+  
+  const age = Date.now() - entry.timestamp;
+  if (age > CACHE_TTL) {
+    topHoldersCache.delete(mint);
+    return null;
+  }
+  
+  return entry.data;
+}
+
+function setCachedTopHolders(mint: string, data: any[]): void {
+  topHoldersCache.set(mint, {
+    data,
+    timestamp: Date.now()
+  });
+}
+
 app.use((req, res, next) => {
   if (req.url?.startsWith('/ws/')) {
     return next();
@@ -455,7 +484,17 @@ app.get('/topholders/:mint', async (req, res) => {
       });
     }
 
+    // Check cache first
+    const cached = getCachedTopHolders(mint);
+    if (cached !== null) {
+      return res.json(cached);
+    }
+
     const topHolders = await getTopHolders(mint);
+    
+    // Cache the result
+    setCachedTopHolders(mint, topHolders);
+    
     res.json(topHolders);
   } catch (error) {
     console.error('Error fetching top holders:', error);

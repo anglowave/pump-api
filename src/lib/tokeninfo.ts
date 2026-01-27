@@ -292,6 +292,38 @@ function decodeBondingCurve(accountData: Buffer, coder: BorshCoder): any | null 
   }
 }
 
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 5,
+  initialDelay: number = 500
+): Promise<T> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+      
+      // Check if it's a 429 error
+      const isRateLimit = error?.message?.includes('429') || 
+                         error?.message?.includes('Too many requests') ||
+                         error?.code === 429;
+      
+      if (!isRateLimit || attempt === maxRetries - 1) {
+        throw error;
+      }
+      
+      // Exponential backoff: 500ms, 1000ms, 2000ms, 4000ms, 8000ms
+      const delay = initialDelay * Math.pow(2, attempt);
+      console.log(`Server responded with 429 Too Many Requests.  Retrying after ${delay}ms delay...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  
+  throw lastError || new Error('Max retries exceeded');
+}
+
 export async function getTopHolders(
   mint: string | PublicKey,
   rpcUrl?: string
@@ -308,9 +340,10 @@ export async function getTopHolders(
 
   const bondingCurve = await deriveBondingCurve(mintPubkey);
   
+  // Retry RPC calls with exponential backoff
   const [largestAccounts, mintInfo] = await Promise.all([
-    connection.getTokenLargestAccounts(mintPubkey),
-    connection.getParsedAccountInfo(mintPubkey)
+    retryWithBackoff(() => connection.getTokenLargestAccounts(mintPubkey)),
+    retryWithBackoff(() => connection.getParsedAccountInfo(mintPubkey))
   ]);
 
   if (!mintInfo.value) {
@@ -329,7 +362,10 @@ export async function getTopHolders(
 
   const tokenAccountPubkeys = largestAccounts.value.map(acc => new PublicKey(acc.address));
   
-  const accountInfos = await connection.getMultipleAccountsInfo(tokenAccountPubkeys);
+  // Retry getMultipleAccountsInfo with exponential backoff
+  const accountInfos = await retryWithBackoff(() => 
+    connection.getMultipleAccountsInfo(tokenAccountPubkeys)
+  );
   
   const holders: TopHolder[] = [];
 
