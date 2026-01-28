@@ -87,12 +87,12 @@ ${reset}`);
   console.log(`${green}│${reset} ${ws2.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset}${' '.repeat(borderWidth - 1)} ${green}│${reset}`);
   console.log(`${green}│${reset}  HTTP:                                                    ${green}│${reset}`);
-  const http1 = `    - http://localhost:${PORT}/health`;
-  const http2 = `    - http://localhost:${PORT}/status`;
-  const http3 = `    - http://localhost:${PORT}/info/[mint]`;
-  const http4 = `    - http://localhost:${PORT}/info/derive/[mint]`;
-  const http5 = `    - http://localhost:${PORT}/topholders/[mint]`;
-  const http6 = `    - http://localhost:${PORT}/`;
+  const http1 = `    - http://localhost:${PORT}/api/health`;
+  const http2 = `    - http://localhost:${PORT}/api/status`;
+  const http3 = `    - http://localhost:${PORT}/api/info/[mint]`;
+  const http4 = `    - http://localhost:${PORT}/api/info/derive/[mint]`;
+  const http5 = `    - http://localhost:${PORT}/api/topholders/[mint]`;
+  const http6 = `    - http://localhost:${PORT}/api`;
   console.log(`${green}│${reset} ${http1.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http2.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http3.padEnd(borderWidth - 1)}${green}│${reset}`);
@@ -355,7 +355,7 @@ wssTransactions.on('connection', async (ws, req) => {
   }
 });
 
-app.get('/health', (req, res) => {
+app.get('/api/health', (req, res) => {
   const status = newPairsSubscription.getStatus();
   res.json({ 
     status: 'ok', 
@@ -369,7 +369,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.get('/status', (req, res) => {
+app.get('/api/status', (req, res) => {
   const status = newPairsSubscription.getStatus();
   const connection = newPairsSubscription.getConnection();
   res.json({
@@ -397,7 +397,7 @@ app.get('/status', (req, res) => {
   });
 });
 
-app.get('/info/:mint', async (req, res) => {
+app.get('/api/info/:mint', async (req, res) => {
   try {
     const { mint } = req.params;
     
@@ -429,7 +429,7 @@ app.get('/info/:mint', async (req, res) => {
   }
 });
 
-app.get('/info/derive/:mint', async (req, res) => {
+app.get('/api/info/derive/:mint', async (req, res) => {
   try {
     const { mint } = req.params;
     
@@ -461,7 +461,7 @@ app.get('/info/derive/:mint', async (req, res) => {
   }
 });
 
-app.get('/topholders/:mint', async (req, res) => {
+app.get('/api/topholders/:mint', async (req, res) => {
   try {
     const { mint } = req.params;
     
@@ -500,7 +500,7 @@ app.get('/topholders/:mint', async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => {
+app.get('/api', (req, res) => {
   res.json({
     message: 'PumpAPI WebSocket API',
     endpoints: {
@@ -509,13 +509,17 @@ app.get('/', (req, res) => {
         transactions: '/ws/txs?bondingCurve=[address]'
       },
       http: {
-        health: '/health',
-        status: '/status',
-        tokenInfo: '/info/[mint]',
-        bondingCurve: '/info/derive/[mint]',
-        topHolders: '/topholders/[mint]'
+        health: '/api/health',
+        status: '/api/status',
+        tokenInfo: '/api/info/[mint]',
+        bondingCurve: '/api/info/derive/[mint]',
+        topHolders: '/api/topholders/[mint]'
       }
     }
   });
+});
+
+app.get('/', (req, res) => {
+  res.redirect('/api');
 });
 
