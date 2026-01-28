@@ -8,14 +8,13 @@ import { getTokenInfo, getBondingCurveFromMint, getTopHolders } from './lib/toke
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Cache for top holders (mint -> { data, timestamp })
 interface CacheEntry<T> {
   data: T;
   timestamp: number;
 }
 
 const topHoldersCache = new Map<string, CacheEntry<any[]>>();
-const CACHE_TTL = 60000; // 60 seconds cache TTL
+const CACHE_TTL = 60000;
 
 function getCachedTopHolders(mint: string): any[] | null {
   const entry = topHoldersCache.get(mint);
@@ -347,7 +346,9 @@ wssTransactions.on('connection', async (ws, req) => {
     console.error('Error setting up transaction subscription:', error);
     console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
     try {
-      ws.close(1011, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      const reason = (msg.length <= 120 ? msg : msg.slice(0, 117) + '...');
+      ws.close(1011, reason);
     } catch (closeError) {
       console.error('Error closing WebSocket:', closeError);
     }
@@ -400,7 +401,6 @@ app.get('/info/:mint', async (req, res) => {
   try {
     const { mint } = req.params;
     
-    // Validate mint address format
     if (!mint || !/^[A-Za-z0-9]{32,44}$/.test(mint)) {
       return res.status(400).json({
         error: 'Invalid mint address',
@@ -408,7 +408,6 @@ app.get('/info/:mint', async (req, res) => {
       });
     }
 
-    // Try to validate it's a valid PublicKey
     try {
       new PublicKey(mint);
     } catch (pubkeyError) {
@@ -434,7 +433,6 @@ app.get('/info/derive/:mint', async (req, res) => {
   try {
     const { mint } = req.params;
     
-    // Validate mint address format
     if (!mint || !/^[A-Za-z0-9]{32,44}$/.test(mint)) {
       return res.status(400).json({
         error: 'Invalid mint address',
@@ -442,7 +440,6 @@ app.get('/info/derive/:mint', async (req, res) => {
       });
     }
 
-    // Try to validate it's a valid PublicKey
     try {
       new PublicKey(mint);
     } catch (pubkeyError) {
@@ -484,15 +481,12 @@ app.get('/topholders/:mint', async (req, res) => {
       });
     }
 
-    // Check cache first
     const cached = getCachedTopHolders(mint);
     if (cached !== null) {
       return res.json(cached);
     }
 
     const topHolders = await getTopHolders(mint);
-    
-    // Cache the result
     setCachedTopHolders(mint, topHolders);
     
     res.json(topHolders);

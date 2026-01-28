@@ -1,10 +1,11 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { BorshCoder, EventParser, Idl } from '@coral-xyz/anchor';
 import pumpIdl from '../../config/idl/pump/idl.json';
+import pumpAmmIdl from '../../config/idl/pump_amm/idl.json';
 
 const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+const PUMP_AMM_PROGRAM_ID = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
 
-/** Decoded BondingCurve account from pump IDL (raw decode may have bigint). */
 export interface BondingCurveDecoded {
   virtual_token_reserves: bigint | number;
   virtual_sol_reserves: bigint | number;
@@ -16,7 +17,6 @@ export interface BondingCurveDecoded {
   is_mayhem_mode: boolean;
 }
 
-/** JSON-serializable BondingCurve shape for wire format. */
 export interface BondingCurveUpdateEventData {
   virtual_token_reserves: string;
   virtual_sol_reserves: string;
@@ -56,18 +56,18 @@ export interface TransactionSubscriptionStatus {
   lastEventTime: Date | null;
   eventCount: number;
   programId: string | null;
-  programType: 'pump' | null;
+  programType: 'pump' | 'pump_amm' | null;
 }
 
 export type TransactionCallback = (event: TransactionStreamEvent) => void;
 
 const PUMP_CODER = new BorshCoder(pumpIdl as Idl);
+const PUMP_AMM_CODER = new BorshCoder(pumpAmmIdl as Idl);
 
 function toNum(v: bigint | number): number {
   return typeof v === 'bigint' ? Number(v) : v;
 }
 
-/** Decode accountNotification / accountSubscribe value into BondingCurve data. value.data can be Buffer or RPC form [base64, "base64"]. */
 export function decodeBondingCurveAccountValue(
   value: { lamports?: number; data: Buffer | [string, string] },
   bondingCurve: string,
@@ -138,6 +138,22 @@ interface PumpTradeEventData {
   mayhem_mode: boolean;
 }
 
+interface PumpAmmBuyEventData {
+  pool: { equals(pk: PublicKey): boolean } | Uint8Array;
+  user: { toBase58(): string } | Uint8Array;
+  quote_amount_in: bigint | number;
+  base_amount_out: bigint | number;
+  [key: string]: unknown;
+}
+
+interface PumpAmmSellEventData {
+  pool: { equals(pk: PublicKey): boolean } | Uint8Array;
+  user: { toBase58(): string } | Uint8Array;
+  base_amount_in: bigint | number;
+  quote_amount_out: bigint | number;
+  [key: string]: unknown;
+}
+
 export class TransactionSubscription {
   private connection: Connection;
   private bondingCurve: PublicKey;
@@ -147,6 +163,7 @@ export class TransactionSubscription {
   private callbacks: Set<TransactionCallback> = new Set();
   private programId: PublicKey | null = null;
   private eventParser: EventParser | null = null;
+  private accountCoder: BorshCoder = PUMP_CODER;
   private prevReserves: { virtual_sol_reserves: number; virtual_token_reserves: number } | null = null;
   private pendingTrades: Map<number, { event: TradeEvent; timestamp: number }> = new Map();
 
@@ -172,15 +189,23 @@ export class TransactionSubscription {
     if (!accountInfo) {
       throw new Error(`Bonding curve account not found: ${this.bondingCurve.toString()}`);
     }
-    if (!accountInfo.owner.equals(PUMP_PROGRAM_ID)) {
+    const owner = accountInfo.owner;
+    if (owner.equals(PUMP_PROGRAM_ID)) {
+      this.programId = owner;
+      this.status.programId = this.programId.toString();
+      this.status.programType = 'pump';
+      this.accountCoder = PUMP_CODER;
+    } else if (owner.equals(PUMP_AMM_PROGRAM_ID)) {
+      this.programId = owner;
+      this.status.programId = this.programId.toString();
+      this.status.programType = 'pump_amm';
+      this.accountCoder = PUMP_AMM_CODER;
+    } else {
       throw new Error(
-        `Bonding curve is not owned by pump program. Owner: ${accountInfo.owner.toString()}. ` +
-        `Only pump program (${PUMP_PROGRAM_ID.toString()}) is supported for accountSubscribe + IDL decode.`
+        `Bonding curve is not owned by pump or pump_amm. Owner: ${owner.toString()}. ` +
+        `Supported: pump (${PUMP_PROGRAM_ID.toString()}), pump_amm (${PUMP_AMM_PROGRAM_ID.toString()}).`
       );
     }
-    this.programId = accountInfo.owner;
-    this.status.programId = this.programId.toString();
-    this.status.programType = 'pump';
   }
 
   private dataToBuffer(data: Buffer | [string, string] | unknown): Buffer | null {
@@ -193,7 +218,7 @@ export class TransactionSubscription {
 
   private decodeAccountData(accountData: Buffer): BondingCurveDecoded | null {
     if (accountData.length < 8) return null;
-    const accounts = PUMP_CODER.accounts;
+    const accounts = this.accountCoder.accounts;
     if (!accounts || typeof (accounts as { decode?: (n: string, d: Buffer) => unknown }).decode !== 'function') {
       return null;
     }
@@ -294,14 +319,69 @@ export class TransactionSubscription {
     }
   }
 
+  private pubkeyEquals(a: { equals(pk: PublicKey): boolean } | Uint8Array, b: PublicKey): boolean {
+    if (a != null && typeof a === 'object' && 'equals' in a && typeof (a as { equals: (p: PublicKey) => boolean }).equals === 'function') {
+      return (a as { equals(pk: PublicKey): boolean }).equals(b);
+    }
+    try {
+      return new PublicKey(a as Uint8Array).equals(b);
+    } catch {
+      return false;
+    }
+  }
+
   private handleLogs(logs: { logs: string[]; err?: any }, context: { slot: number; signature?: string }): void {
     if (!this.eventParser) return;
     
     try {
       const parsedEvents = Array.from(this.eventParser.parseLogs(logs.logs, false));
       const bondingCurveStr = this.bondingCurve.toString();
-      
+      const isAmm = this.status.programType === 'pump_amm';
+
       for (const ev of parsedEvents) {
+        if (isAmm) {
+          if (ev.name === 'BuyEvent') {
+            const d = ev.data as PumpAmmBuyEventData;
+            if (!this.pubkeyEquals(d.pool, this.bondingCurve)) continue;
+            const userStr = typeof d.user === 'object' && d.user != null && 'toBase58' in d.user
+              ? (d.user as { toBase58(): string }).toBase58()
+              : new PublicKey(d.user as Uint8Array).toBase58();
+            const amountSol = toNum(d.quote_amount_in) / 1_000_000_000;
+            const event: TradeEvent = {
+              type: 'buy',
+              amount: amountSol,
+              bonding_curve: bondingCurveStr,
+              slot: context.slot,
+              token_amount_delta: String(toNum(d.base_amount_out)),
+              user: userStr,
+              signature: context.signature
+            };
+            this.status.eventCount++;
+            this.status.lastEventTime = new Date();
+            this.notifyCallbacks(event);
+          } else if (ev.name === 'SellEvent') {
+            const d = ev.data as PumpAmmSellEventData;
+            if (!this.pubkeyEquals(d.pool, this.bondingCurve)) continue;
+            const userStr = typeof d.user === 'object' && d.user != null && 'toBase58' in d.user
+              ? (d.user as { toBase58(): string }).toBase58()
+              : new PublicKey(d.user as Uint8Array).toBase58();
+            const amountSol = toNum(d.quote_amount_out) / 1_000_000_000;
+            const event: TradeEvent = {
+              type: 'sell',
+              amount: amountSol,
+              bonding_curve: bondingCurveStr,
+              slot: context.slot,
+              token_amount_delta: String(toNum(d.base_amount_in)),
+              user: userStr,
+              signature: context.signature
+            };
+            this.status.eventCount++;
+            this.status.lastEventTime = new Date();
+            this.notifyCallbacks(event);
+          }
+          continue;
+        }
+
         if (ev.name !== 'TradeEvent') continue;
         
         const d = ev.data as PumpTradeEventData;
@@ -360,7 +440,7 @@ export class TransactionSubscription {
 
     try {
       await this.ensurePumpBondingCurve();
-      this.eventParser = new EventParser(PUMP_PROGRAM_ID, PUMP_CODER);
+      this.eventParser = new EventParser(this.programId!, this.accountCoder);
       
       const bondingCurveStr = this.bondingCurve.toString();
       
