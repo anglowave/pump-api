@@ -38,10 +38,20 @@ Server runs on port `3000` by default (configurable via `PORT` environment varia
 
 ## REST API
 
+All HTTP endpoints are under the `/api` prefix.
+
+### API Root
+
+```http
+GET /api
+```
+
+Returns the list of available endpoints (WebSocket and HTTP). `GET /` redirects to `/api`.
+
 ### Token Info
 
 ```http
-GET /info/:mint
+GET /api/info/:mint
 ```
 
 Fetches token information including metadata and bonding curve data.
@@ -51,7 +61,7 @@ Fetches token information including metadata and bonding curve data.
 
 **Example:**
 ```bash
-curl http://localhost:3000/info/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
+curl http://localhost:3000/api/info/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
 ```
 
 **Response:**
@@ -76,7 +86,7 @@ curl http://localhost:3000/info/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
 ### Derive Bonding Curve
 
 ```http
-GET /info/derive/:mint
+GET /api/info/derive/:mint
 ```
 
 Derives the bonding curve PDA address from a mint address using the pump.fun program seeds.
@@ -86,7 +96,7 @@ Derives the bonding curve PDA address from a mint address using the pump.fun pro
 
 **Example:**
 ```bash
-curl http://localhost:3000/info/derive/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
+curl http://localhost:3000/api/info/derive/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
 ```
 
 **Response:**
@@ -98,10 +108,26 @@ curl http://localhost:3000/info/derive/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrep
 
 **Note:** This endpoint performs PDA derivation only. No account data is fetched or decoded.
 
+### Top Holders
+
+```http
+GET /api/topholders/:mint
+```
+
+Returns top token holders for a mint. Responses are cached for 60 seconds.
+
+**Parameters:**
+- `mint` (path): Token mint address
+
+**Example:**
+```bash
+curl http://localhost:3000/api/topholders/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
+```
+
 ### Health Check
 
 ```http
-GET /health
+GET /api/health
 ```
 
 Returns server health status and subscription metrics.
@@ -109,7 +135,7 @@ Returns server health status and subscription metrics.
 ### Status
 
 ```http
-GET /status
+GET /api/status
 ```
 
 Returns detailed status of all active subscriptions, connection counts, and program information.
