@@ -1,12 +1,4 @@
-
-```
-██████╗ ██╗   ██╗███╗   ███╗██████╗      █████╗ ██████╗ ██╗            
-██╔══██╗██║   ██║████╗ ████║██╔══██╗    ██╔══██╗██╔══██╗██║             
-██████╔╝██║   ██║██╔████╔██║██████╔╝    ███████║██████╔╝██║
-██╔═══╝ ██║   ██║██║╚██╔╝██║██╔═══╝     ██╔══██║██╔═══╝ ██║
-██║     ╚██████╔╝██║ ╚═╝ ██║██║         ██║  ██║██║     ██║
-╚═╝      ╚═════╝ ╚═╝     ╚═╝╚═╝         ╚═╝  ╚═╝╚═╝     ╚═╝
-```
+![PumpAPI Banner](images/banner.png)
 
 High-level API for [pump.fun](https://pump.fun) and pump_amm programs on Solana. Provides WebSocket subscriptions for real-time event monitoring and REST endpoints for token data retrieval.
 
