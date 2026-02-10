@@ -566,12 +566,19 @@ app.post('/api/buy', async (req, res) => {
 
 app.post('/api/sell', async (req, res) => {
 	try {
-		const { mint, user, tokenAmount, slippage, privateKey } = req.body
+		const { mint, user, percentage, slippage, privateKey } = req.body
 
-		if (!mint || !user || tokenAmount === undefined || !privateKey) {
+		if (!mint || !user || percentage === undefined || !privateKey) {
 			return res.status(400).json({
 				error: 'Missing required fields',
-				message: 'Required fields: mint, user, tokenAmount, privateKey'
+				message: 'Required fields: mint, user, percentage, privateKey'
+			})
+		}
+
+		if (typeof percentage !== 'number' || percentage <= 0 || percentage > 100) {
+			return res.status(400).json({
+				error: 'Invalid percentage',
+				message: 'Percentage must be a number between 0 and 100'
 			})
 		}
 
@@ -602,7 +609,7 @@ app.post('/api/sell', async (req, res) => {
 		const result = await pumpOperations.executeSell({
 			mint,
 			user,
-			tokenAmount,
+			percentage,
 			slippage,
 			privateKey
 		})

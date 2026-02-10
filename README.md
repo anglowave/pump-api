@@ -179,14 +179,14 @@ curl -X POST http://localhost:3000/api/buy \
 POST /api/sell
 ```
 
-Executes a sell transaction for tokens on pump.fun. Returns the transaction signature.
+Executes a sell transaction for tokens on pump.fun. Sells a percentage of the tokens held by the user. Returns the transaction signature.
 
 **Request Body:**
 ```json
 {
   "mint": "F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump",
   "user": "YourWalletAddress...",
-  "tokenAmount": "1000000",
+  "percentage": 50,
   "slippage": 1,
   "privateKey": [1,2,3,...]
 }
@@ -195,7 +195,7 @@ Executes a sell transaction for tokens on pump.fun. Returns the transaction sign
 **Parameters:**
 - `mint` (required): Token mint address (Solana public key)
 - `user` (required): User wallet address (Solana public key)
-- `tokenAmount` (required): Amount of tokens to sell (number or string, in token's smallest unit)
+- `percentage` (required): Percentage of tokens to sell (number between 0 and 100). For example, `50` means sell 50% of the tokens you hold.
 - `slippage` (optional): Slippage tolerance in basis points (default: 1)
 - `privateKey` (required): Wallet private key as either:
   - JSON array of 64 numbers (secret key bytes): `[1,2,3,...]`
@@ -208,7 +208,7 @@ curl -X POST http://localhost:3000/api/sell \
   -d '{
     "mint": "F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump",
     "user": "YourWalletAddress...",
-    "tokenAmount": "1000000",
+    "percentage": 50,
     "slippage": 1,
     "privateKey": [1,2,3,...]
   }'
@@ -221,6 +221,8 @@ curl -X POST http://localhost:3000/api/sell \
   "estimatedSolAmount": "500000000"
 }
 ```
+
+**Note:** The API automatically fetches your current token balance and calculates the exact token amount to sell based on the percentage you specify.
 
 ### Create Token
 

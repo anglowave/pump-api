@@ -1,6 +1,6 @@
 import { Connection, PublicKey, Transaction, AccountInfo, Keypair, sendAndConfirmTransaction } from '@solana/web3.js'
 import { OnlinePumpSdk, PUMP_SDK, getBuyTokenAmountFromSolAmount, getSellSolAmountFromTokenAmount, bondingCurvePda, PUMP_PROGRAM_ID } from '@pump-fun/pump-sdk'
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token'
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, getAccount } from '@solana/spl-token'
 import BN from 'bn.js'
 import bs58 from 'bs58'
 
@@ -20,7 +20,7 @@ export interface BuyResponse {
 export interface SellRequest {
 	mint: string
 	user: string
-	tokenAmount: number | string
+	percentage: number
 	slippage?: number
 	privateKey: number[] | string
 }
@@ -49,9 +49,6 @@ export interface CreateResponse {
 	estimatedTokenAmount?: string
 }
 
-/**
- * PumpOperations class for building and executing pump.fun transactions
- */
 export class PumpOperations {
 	private readonly connection: Connection
 	private readonly onlineSdk: OnlinePumpSdk
@@ -67,7 +64,6 @@ export class PumpOperations {
 			let privateKeyBytes: Uint8Array
 			
 			if (typeof privateKey === 'string') {
-				// Try parsing as JSON string first
 				try {
 					const parsed = JSON.parse(privateKey)
 					if (Array.isArray(parsed)) {
@@ -76,7 +72,6 @@ export class PumpOperations {
 						throw new Error('JSON private key must be an array')
 					}
 				} catch (jsonError) {
-					// If not JSON, try base58
 					try {
 						privateKeyBytes = bs58.decode(privateKey)
 					} catch (base58Error) {
@@ -84,7 +79,6 @@ export class PumpOperations {
 					}
 				}
 			} else {
-				// Already an array
 				privateKeyBytes = Uint8Array.from(privateKey)
 			}
 
@@ -99,15 +93,11 @@ export class PumpOperations {
 	}
 
 	private async executeTransaction(transaction: Transaction, keypair: Keypair): Promise<string> {
-		// Set recent blockhash
 		const { blockhash } = await this.connection.getLatestBlockhash('confirmed')
 		transaction.recentBlockhash = blockhash
 		transaction.feePayer = keypair.publicKey
-
-		// Sign transaction
 		transaction.sign(keypair)
 
-		// Send and confirm transaction
 		const signature = await sendAndConfirmTransaction(
 			this.connection,
 			transaction,
@@ -121,9 +111,6 @@ export class PumpOperations {
 		return signature
 	}
 
-	/**
-	 * Execute buy transaction for a token
-	 */
 	async executeBuy(request: BuyRequest): Promise<BuyResponse> {
 		const { mint, user, solAmount, slippage = 1, privateKey } = request
 
@@ -202,11 +189,12 @@ export class PumpOperations {
 		}
 	}
 
-	/**
-	 * Execute sell transaction for a token
-	 */
 	async executeSell(request: SellRequest): Promise<SellResponse> {
-		const { mint, user, tokenAmount, slippage = 1, privateKey } = request
+		const { mint, user, percentage, slippage = 1, privateKey } = request
+
+		if (percentage <= 0 || percentage > 100) {
+			throw new Error('Percentage must be between 0 and 100')
+		}
 
 		const mintPubkey = new PublicKey(mint)
 		const userPubkey = new PublicKey(user)
@@ -215,16 +203,62 @@ export class PumpOperations {
 		const global = await this.onlineSdk.fetchGlobal()
 		let bondingCurveAccountInfo: AccountInfo<Buffer>
 		let bondingCurve: any
+		let tokenProgram: PublicKey
+		let userBalance: BN
 		
 		try {
-			const sellState = await this.onlineSdk.fetchSellState(mintPubkey, userPubkey, TOKEN_PROGRAM_ID)
+			const bondingCurvePdaAddress = bondingCurvePda(mintPubkey)
+			const bondingCurveInfo = await this.connection.getAccountInfo(bondingCurvePdaAddress)
+			
+			if (!bondingCurveInfo) {
+				throw new Error(`Bonding curve account not found for mint: ${mintPubkey.toString()}`)
+			}
+
+			bondingCurveAccountInfo = bondingCurveInfo as AccountInfo<Buffer>
+			bondingCurve = PUMP_SDK.decodeBondingCurve(bondingCurveAccountInfo)
+			
+			const suggestedTokenProgram = bondingCurve.isMayhemMode ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
+			const otherTokenProgram = bondingCurve.isMayhemMode ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID
+			
+			let sellState: any = null
+			let foundTokenProgram: PublicKey | null = null
+			
+			try {
+				sellState = await this.onlineSdk.fetchSellState(mintPubkey, userPubkey, suggestedTokenProgram)
+				foundTokenProgram = suggestedTokenProgram
+			} catch (error) {
+				try {
+					sellState = await this.onlineSdk.fetchSellState(mintPubkey, userPubkey, otherTokenProgram)
+					foundTokenProgram = otherTokenProgram
+				} catch (error2) {
+					throw new Error(`Token account not found for user ${userPubkey.toString()} and mint ${mintPubkey.toString()}. Tried both TOKEN_PROGRAM_ID (${TOKEN_PROGRAM_ID.toString()}) and TOKEN_2022_PROGRAM_ID (${TOKEN_2022_PROGRAM_ID.toString()}). The user may not own any tokens, or the token account may not exist yet.`)
+				}
+			}
+			
+			if (!sellState || !foundTokenProgram) {
+				throw new Error(`Failed to fetch sell state for user ${userPubkey.toString()} and mint ${mintPubkey.toString()}`)
+			}
+			
+			tokenProgram = foundTokenProgram
 			bondingCurveAccountInfo = sellState.bondingCurveAccountInfo as AccountInfo<Buffer>
 			bondingCurve = sellState.bondingCurve
+			
+			const associatedTokenAddress = getAssociatedTokenAddressSync(mintPubkey, userPubkey, true, tokenProgram)
+			const tokenAccountParsed = await getAccount(this.connection, associatedTokenAddress, 'confirmed', tokenProgram)
+			
+			if (!tokenAccountParsed.mint.equals(mintPubkey)) {
+				throw new Error(`Token account mint mismatch. Account has mint ${tokenAccountParsed.mint.toString()}, but expected ${mintPubkey.toString()}`)
+			}
+			
+			if (!tokenAccountParsed.owner.equals(userPubkey)) {
+				throw new Error(`Token account owner mismatch. Account has owner ${tokenAccountParsed.owner.toString()}, but expected ${userPubkey.toString()}`)
+			}
+			
+			userBalance = new BN(tokenAccountParsed.amount.toString())
 		} catch (error) {
 			const rpcUrl = this.connection.rpcEndpoint
 			const network = rpcUrl.includes('devnet') ? 'devnet' : rpcUrl.includes('testnet') ? 'testnet' : 'mainnet'
 			
-			// Try to get more information about why it failed
 			try {
 				const bondingCurvePdaAddress = bondingCurvePda(mintPubkey)
 				const bondingCurveAccount = await this.connection.getAccountInfo(bondingCurvePdaAddress)
@@ -246,10 +280,24 @@ export class PumpOperations {
 				throw error
 			}
 		}
+
+		if (userBalance.isZero()) {
+			throw new Error(`User ${userPubkey.toString()} has zero balance for token ${mintPubkey.toString()}`)
+		}
+
+		const percentageBN = new BN(percentage)
+		const tokenAmountBN = userBalance.mul(percentageBN).div(new BN(100))
+
+		if (tokenAmountBN.isZero()) {
+			throw new Error(`Calculated token amount is zero. User balance: ${userBalance.toString()}, Percentage: ${percentage}%`)
+		}
+
+		if (tokenAmountBN.gt(userBalance)) {
+			throw new Error(`Calculated sell amount (${tokenAmountBN.toString()}) exceeds user balance (${userBalance.toString()}). User balance: ${userBalance.toString()}, Percentage: ${percentage}%, Token program: ${tokenProgram.toString()}`)
+		}
 		
 		const feeConfig = await this.onlineSdk.fetchFeeConfig().catch(() => null)
 
-		const tokenAmountBN = typeof tokenAmount === 'string' ? new BN(tokenAmount) : new BN(tokenAmount)
 		const solAmount = getSellSolAmountFromTokenAmount({
 			global,
 			feeConfig,
@@ -267,7 +315,7 @@ export class PumpOperations {
 			amount: tokenAmountBN,
 			solAmount,
 			slippage,
-			tokenProgram: TOKEN_PROGRAM_ID,
+			tokenProgram: tokenProgram,
 			mayhemMode: bondingCurve.isMayhemMode
 		})
 
@@ -282,9 +330,6 @@ export class PumpOperations {
 		}
 	}
 
-	/**
-	 * Execute create transaction for a new token
-	 */
 	async executeCreate(request: CreateRequest): Promise<CreateResponse> {
 		const { name, symbol, uri, creator, user, mint, initialBuySolAmount, slippage = 1, mayhemMode = false, privateKey } = request
 
@@ -349,9 +394,6 @@ export class PumpOperations {
 		}
 	}
 
-	/**
-	 * Get the RPC URL being used
-	 */
 	getRpcUrl(): string {
 		return this.connection.rpcEndpoint
 	}
