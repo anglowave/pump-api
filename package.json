@@ -15,11 +15,15 @@
   "type": "commonjs",
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
+    "@pump-fun/pump-sdk": "^1.27.0",
+    "@pump-fun/pump-swap-sdk": "^1.13.0",
     "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
     "express": "^5.2.1",
     "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@types/bn.js": "^5.2.0",
     "@types/express": "^5.0.6",
     "@types/node": "^25.0.10",
     "@types/ws": "^8.18.1",

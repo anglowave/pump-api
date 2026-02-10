@@ -4,9 +4,14 @@ import { PublicKey } from '@solana/web3.js';
 import { NewPairsSubscription } from './lib/newpairs';
 import { TransactionSubscription, TransactionStreamEvent } from './lib/transactions';
 import { getTokenInfo, getBondingCurveFromMint, getTopHolders } from './lib/tokeninfo';
+import { PumpOperations } from './lib/pump-operations';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+
+const pumpOperations = new PumpOperations();
 
 interface CacheEntry<T> {
   data: T;
@@ -92,13 +97,19 @@ ${reset}`);
   const http3 = `    - http://localhost:${PORT}/api/info/[mint]`;
   const http4 = `    - http://localhost:${PORT}/api/info/derive/[mint]`;
   const http5 = `    - http://localhost:${PORT}/api/topholders/[mint]`;
-  const http6 = `    - http://localhost:${PORT}/api`;
+  const http6 = `    - POST http://localhost:${PORT}/api/buy`;
+  const http7 = `    - POST http://localhost:${PORT}/api/sell`;
+  const http8 = `    - POST http://localhost:${PORT}/api/create`;
+  const http9 = `    - http://localhost:${PORT}/api`;
   console.log(`${green}│${reset} ${http1.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http2.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http3.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http4.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http5.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}│${reset} ${http6.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset} ${http7.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset} ${http8.padEnd(borderWidth - 1)}${green}│${reset}`);
+  console.log(`${green}│${reset} ${http9.padEnd(borderWidth - 1)}${green}│${reset}`);
   console.log(`${green}└${'─'.repeat(borderWidth)}┘${reset}\n`);
   process.stdout.write(`${white}┌${'─'.repeat(borderWidth)}┐${reset}\n`);
   process.stdout.write(`${white}│${reset}              Connection Status                            ${white}│${reset}\n`);
@@ -500,6 +511,180 @@ app.get('/api/topholders/:mint', async (req, res) => {
   }
 });
 
+app.post('/api/buy', async (req, res) => {
+	try {
+		const { mint, user, solAmount, slippage, privateKey } = req.body
+
+		if (!mint || !user || solAmount === undefined || !privateKey) {
+			return res.status(400).json({
+				error: 'Missing required fields',
+				message: 'Required fields: mint, user, solAmount, privateKey'
+			})
+		}
+
+		if (!/^[A-Za-z0-9]{32,44}$/.test(mint)) {
+			return res.status(400).json({
+				error: 'Invalid mint address',
+				message: 'Mint address must be a valid Solana public key'
+			})
+		}
+
+		if (!/^[A-Za-z0-9]{32,44}$/.test(user)) {
+			return res.status(400).json({
+				error: 'Invalid user address',
+				message: 'User address must be a valid Solana public key'
+			})
+		}
+
+		try {
+			new PublicKey(mint)
+			new PublicKey(user)
+		} catch (pubkeyError) {
+			return res.status(400).json({
+				error: 'Invalid public key format',
+				message: pubkeyError instanceof Error ? pubkeyError.message : 'Invalid format'
+			})
+		}
+
+		const result = await pumpOperations.executeBuy({
+			mint,
+			user,
+			solAmount,
+			slippage,
+			privateKey
+		})
+
+		res.json(result)
+	} catch (error) {
+		console.error('Error executing buy transaction:', error)
+		res.status(500).json({
+			error: 'Failed to execute buy transaction',
+			message: error instanceof Error ? error.message : 'Unknown error'
+		})
+	}
+})
+
+app.post('/api/sell', async (req, res) => {
+	try {
+		const { mint, user, tokenAmount, slippage, privateKey } = req.body
+
+		if (!mint || !user || tokenAmount === undefined || !privateKey) {
+			return res.status(400).json({
+				error: 'Missing required fields',
+				message: 'Required fields: mint, user, tokenAmount, privateKey'
+			})
+		}
+
+		if (!/^[A-Za-z0-9]{32,44}$/.test(mint)) {
+			return res.status(400).json({
+				error: 'Invalid mint address',
+				message: 'Mint address must be a valid Solana public key'
+			})
+		}
+
+		if (!/^[A-Za-z0-9]{32,44}$/.test(user)) {
+			return res.status(400).json({
+				error: 'Invalid user address',
+				message: 'User address must be a valid Solana public key'
+			})
+		}
+
+		try {
+			new PublicKey(mint)
+			new PublicKey(user)
+		} catch (pubkeyError) {
+			return res.status(400).json({
+				error: 'Invalid public key format',
+				message: pubkeyError instanceof Error ? pubkeyError.message : 'Invalid format'
+			})
+		}
+
+		const result = await pumpOperations.executeSell({
+			mint,
+			user,
+			tokenAmount,
+			slippage,
+			privateKey
+		})
+
+		res.json(result)
+	} catch (error) {
+		console.error('Error executing sell transaction:', error)
+		res.status(500).json({
+			error: 'Failed to execute sell transaction',
+			message: error instanceof Error ? error.message : 'Unknown error'
+		})
+	}
+})
+
+app.post('/api/create', async (req, res) => {
+	try {
+		const { name, symbol, uri, creator, user, mint, initialBuySolAmount, slippage, mayhemMode, privateKey } = req.body
+
+		if (!name || !symbol || !uri || !creator || !user || !privateKey) {
+			return res.status(400).json({
+				error: 'Missing required fields',
+				message: 'Required fields: name, symbol, uri, creator, user, privateKey'
+			})
+		}
+
+		if (mint && !/^[A-Za-z0-9]{32,44}$/.test(mint)) {
+			return res.status(400).json({
+				error: 'Invalid mint address',
+				message: 'Mint address must be a valid Solana public key'
+			})
+		}
+
+		if (!/^[A-Za-z0-9]{32,44}$/.test(creator)) {
+			return res.status(400).json({
+				error: 'Invalid creator address',
+				message: 'Creator address must be a valid Solana public key'
+			})
+		}
+
+		if (!/^[A-Za-z0-9]{32,44}$/.test(user)) {
+			return res.status(400).json({
+				error: 'Invalid user address',
+				message: 'User address must be a valid Solana public key'
+			})
+		}
+
+		try {
+			new PublicKey(creator)
+			new PublicKey(user)
+			if (mint) {
+				new PublicKey(mint)
+			}
+		} catch (pubkeyError) {
+			return res.status(400).json({
+				error: 'Invalid public key format',
+				message: pubkeyError instanceof Error ? pubkeyError.message : 'Invalid format'
+			})
+		}
+
+		const result = await pumpOperations.executeCreate({
+			name,
+			symbol,
+			uri,
+			creator,
+			user,
+			mint,
+			initialBuySolAmount,
+			slippage,
+			mayhemMode,
+			privateKey
+		})
+
+		res.json(result)
+	} catch (error) {
+		console.error('Error executing create transaction:', error)
+		res.status(500).json({
+			error: 'Failed to execute create transaction',
+			message: error instanceof Error ? error.message : 'Unknown error'
+		})
+	}
+})
+
 app.get('/api', (req, res) => {
   res.json({
     message: 'PumpAPI WebSocket API',
@@ -513,7 +698,10 @@ app.get('/api', (req, res) => {
         status: '/api/status',
         tokenInfo: '/api/info/[mint]',
         bondingCurve: '/api/info/derive/[mint]',
-        topHolders: '/api/topholders/[mint]'
+        topHolders: '/api/topholders/[mint]',
+        buy: 'POST /api/buy',
+        sell: 'POST /api/sell',
+        create: 'POST /api/create'
       }
     }
   });
