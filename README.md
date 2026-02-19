@@ -64,9 +64,13 @@ curl http://localhost:3000/api/info/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
 {
   "mint": "F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump",
   "bondingCurve": "HLmFrsxFKNhA5ogZ3H5SnM5QRCG1LxpM6oDigsRFGz7M",
-  "complete": false,
+  "migrated": false,
   "creator": "...",
   "isMayhemMode": false,
+  "price": 0.0001895447904774492,
+  "marketcap": 189544.7904774492,
+  "priceUsd": 0.000015131360623814767,
+  "marketcapUsd": 15131.360623814767,
   "metadata": {
     "name": "PenguCoin",
     "symbol": "PENGUCOIN",
@@ -76,6 +80,30 @@ curl http://localhost:3000/api/info/F1b5B2dnYTPMViJ3Gtn1DLSQAwxPn42RdVzdpvrepump
   }
 }
 ```
+
+**Response Fields:**
+- `mint`: Token mint address
+- `bondingCurve`: Bonding curve PDA address
+- `migrated`: Whether the token has migrated to pump_amm (boolean)
+- `creator`: Creator wallet address
+- `isMayhemMode`: Whether mayhem mode is enabled (boolean)
+- `price`: Price per token in lamports (number, optional)
+- `marketcap`: Market cap in lamports (number, optional)
+- `priceUsd`: Price per token in USD (number, optional)
+- `marketcapUsd`: Market cap in USD (number, optional)
+- `metadata`: Token metadata object (optional)
+
+**Price and Market Cap Calculation:**
+- `price`: Calculated as `virtual_sol_reserves / virtual_token_reserves` (lamports per token base unit)
+- `marketcap`: Calculated as `price × 1,000,000,000` (total supply) in lamports
+- `priceUsd`: Price converted to USD using current SOL/USD exchange rate
+- `marketcapUsd`: Market cap converted to USD using current SOL/USD exchange rate
+
+**Note:** 
+- For non-migrated coins: Price is calculated from bonding curve virtual reserves (native SOL)
+- For migrated coins: Price is calculated from pool token account reserves (wrapped SOL/WSOL)
+- Price and marketcap fields are only included when bonding curve or pool data is available
+- USD values are only included when SOL price data is successfully fetched from CoinGecko
 
 ### Derive Bonding Curve
 
