@@ -6,12 +6,57 @@ import pumpAmmIdl from '../../config/idl/pump_amm/idl.json';
 const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 const PUMP_AMM_PROGRAM_ID = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
 
+// Cache for SOL price to avoid excessive API calls
+let solPriceCache: { price: number; timestamp: number } | null = null;
+const SOL_PRICE_CACHE_TTL = 60000; // 1 minute cache
+
+async function getSolPriceUsd(): Promise<number | null> {
+	// Check cache first
+	if (solPriceCache && Date.now() - solPriceCache.timestamp < SOL_PRICE_CACHE_TTL) {
+		return solPriceCache.price;
+	}
+
+	try {
+		const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd', {
+			headers: {
+				'Accept': 'application/json'
+			}
+		});
+
+		if (!response.ok) {
+			console.warn('Failed to fetch SOL price from CoinGecko:', response.status);
+			return null;
+		}
+
+		const data = await response.json() as { solana?: { usd?: number } };
+		const price = data.solana?.usd;
+
+		if (price && price > 0) {
+			solPriceCache = {
+				price: price,
+				timestamp: Date.now()
+			};
+			return price;
+		}
+
+		return null;
+	} catch (error) {
+		console.warn('Error fetching SOL price:', error);
+		return null;
+	}
+}
+
+
 export interface TokenInfo {
   mint: string;
   bondingCurve: string;
   migrated: boolean;
   creator: string;
   isMayhemMode: boolean;
+  price?: number;
+  marketcap?: number;
+  priceUsd?: number;
+  marketcapUsd?: number;
   metadata?: {
     name?: string;
     symbol?: string;
@@ -177,12 +222,53 @@ export async function getTokenInfo(
     throw new Error(`Failed to decode bonding curve data for mint: ${mintPubkey.toString()}. Account owner: ${programName} (${programId.toString()}). Account data length: ${accountInfo.data.length} bytes. The account may not be a valid BondingCurve account.`);
   }
 
+  // Calculate price and marketcap
+  let price: number | undefined;
+  let marketcap: number | undefined;
+  let priceUsd: number | undefined;
+  let marketcapUsd: number | undefined;
+
+  if (decoded.virtual_sol_reserves !== undefined && decoded.virtual_token_reserves !== undefined) {
+    const virtualSolReserves = typeof decoded.virtual_sol_reserves === 'bigint' 
+      ? Number(decoded.virtual_sol_reserves) 
+      : decoded.virtual_sol_reserves;
+    const virtualTokenReserves = typeof decoded.virtual_token_reserves === 'bigint' 
+      ? Number(decoded.virtual_token_reserves) 
+      : decoded.virtual_token_reserves;
+
+    if (virtualTokenReserves > 0) {
+      // price = virtual_sol_reserves / virtual_token_reserves (lamports per token base unit)
+      price = virtualSolReserves / virtualTokenReserves;
+      
+      // Convert lamports to SOL per full token (accounting for 6 decimals)
+      // price is lamports per token base unit, tokens have 6 decimals (1e6 base units per token)
+      // So: SOL per full token = (price / 1e9) * 1e6 = price / 1e3
+      const priceInSol = price / 1e3; // SOL per full token
+      
+      // marketcap = priceInSol × 1,000,000,000 (total supply in SOL)
+      marketcap = priceInSol * 1_000_000_000;
+
+      // Convert SOL amounts to USD
+      const solPriceUsd = await getSolPriceUsd();
+      if (solPriceUsd !== null && solPriceUsd > 0) {
+        priceUsd = priceInSol * solPriceUsd;
+        
+        // marketcapUsd = priceUsd × 1,000,000,000 (total supply)
+        marketcapUsd = priceUsd * 1_000_000_000;
+      }
+    }
+  }
+
   return {
     mint: mintPubkey.toString(),
     bondingCurve: bondingCurve.toString(),
     migrated: migrated,
     creator: decoded.creator?.toString() || '',
     isMayhemMode: decoded.is_mayhem_mode || false,
+    price: price,
+    marketcap: marketcap,
+    priceUsd: priceUsd,
+    marketcapUsd: marketcapUsd,
     metadata: metadata
   };
 }
