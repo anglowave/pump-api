@@ -1,17 +1,17 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { BorshCoder, Idl } from '@coral-xyz/anchor';
+import { TOKEN_PROGRAM_ID, getAccount } from '@solana/spl-token';
 import pumpIdl from '../../config/idl/pump/idl.json';
 import pumpAmmIdl from '../../config/idl/pump_amm/idl.json';
 
 const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 const PUMP_AMM_PROGRAM_ID = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
+const WSOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 
-// Cache for SOL price to avoid excessive API calls
 let solPriceCache: { price: number; timestamp: number } | null = null;
-const SOL_PRICE_CACHE_TTL = 60000; // 1 minute cache
+const SOL_PRICE_CACHE_TTL = 60000;
 
 async function getSolPriceUsd(): Promise<number | null> {
-	// Check cache first
 	if (solPriceCache && Date.now() - solPriceCache.timestamp < SOL_PRICE_CACHE_TTL) {
 		return solPriceCache.price;
 	}
@@ -172,63 +172,262 @@ export async function getTokenInfo(
 
   const bondingCurve = await deriveBondingCurve(mintPubkey);
   const [accountInfo, metadata] = await Promise.all([
-    connection.getAccountInfo(bondingCurve),
+    connection.getAccountInfo(bondingCurve).catch(() => null),
     getTokenMetadata(mintPubkey, connection)
   ]);
   
-  if (!accountInfo) {
-    throw new Error(`Bonding curve not found for mint: ${mintPubkey.toString()}. The bonding curve account does not exist. This may mean: 1) The token was never created on pump.fun, 2) The bonding curve was closed/migrated, or 3) The mint address is incorrect.`);
-  }
-
-  const programId = accountInfo.owner;
-  
-  if (!programId.equals(PUMP_PROGRAM_ID) && !programId.equals(PUMP_AMM_PROGRAM_ID)) {
-    throw new Error(`Bonding curve account is owned by unknown program: ${programId.toString()}. Expected pump (${PUMP_PROGRAM_ID.toString()}) or pump_amm (${PUMP_AMM_PROGRAM_ID.toString()}) program.`);
-  }
-  
   let coder: BorshCoder;
   let migrated = false;
+  let decoded: any = null;
+  let creator: string | null = null;
   
-  if (programId.equals(PUMP_AMM_PROGRAM_ID)) {
+  if (!accountInfo) {
     migrated = true;
-    coder = new BorshCoder(pumpAmmIdl as Idl);
   } else {
-    coder = new BorshCoder(pumpIdl as Idl);
-  }
-
-  const decoded = decodeBondingCurve(accountInfo.data, coder);
-  
-  if (programId.equals(PUMP_PROGRAM_ID)) {
-    if (decoded && decoded.complete === true) {
+    const programId = accountInfo.owner;
+    
+    if (!programId.equals(PUMP_PROGRAM_ID) && !programId.equals(PUMP_AMM_PROGRAM_ID)) {
+      throw new Error(`Bonding curve account is owned by unknown program: ${programId.toString()}. Expected pump (${PUMP_PROGRAM_ID.toString()}) or pump_amm (${PUMP_AMM_PROGRAM_ID.toString()}) program.`);
+    }
+    
+    if (programId.equals(PUMP_AMM_PROGRAM_ID)) {
       migrated = true;
+      coder = new BorshCoder(pumpAmmIdl as Idl);
     } else {
-      migrated = false;
+      coder = new BorshCoder(pumpIdl as Idl);
+    }
+
+    decoded = decodeBondingCurve(accountInfo.data, coder);
+    
+    if (programId.equals(PUMP_PROGRAM_ID)) {
+      if (decoded && decoded.complete === true) {
+        migrated = true;
+      } else {
+        migrated = false;
+      }
+    }
+    
+    if (decoded && decoded.creator) {
+      creator = typeof decoded.creator === 'object' && 'toBase58' in decoded.creator 
+        ? decoded.creator.toBase58() 
+        : new PublicKey(decoded.creator as Uint8Array).toString();
     }
   }
   
-  if (!decoded) {
+  if (!decoded && !migrated) {
     if (metadata) {
       return {
         mint: mintPubkey.toString(),
         bondingCurve: bondingCurve.toString(),
-        migrated: migrated,
+        migrated: false,
         creator: '',
         isMayhemMode: false,
         metadata: metadata
       };
     }
     
-    const programName = programId.equals(PUMP_PROGRAM_ID) ? 'pump' : 'pump_amm';
-    throw new Error(`Failed to decode bonding curve data for mint: ${mintPubkey.toString()}. Account owner: ${programName} (${programId.toString()}). Account data length: ${accountInfo.data.length} bytes. The account may not be a valid BondingCurve account.`);
+    throw new Error(`Failed to decode bonding curve data for mint: ${mintPubkey.toString()}. The bonding curve account may not exist or may not be a valid BondingCurve account.`);
   }
 
-  // Calculate price and marketcap
   let price: number | undefined;
   let marketcap: number | undefined;
   let priceUsd: number | undefined;
   let marketcapUsd: number | undefined;
 
-  if (decoded.virtual_sol_reserves !== undefined && decoded.virtual_token_reserves !== undefined) {
+  if (migrated) {
+    try {
+      let poolAccountInfo: { pubkey: PublicKey; account: { data: Buffer } } | null = null;
+      
+      try {
+        const [poolAuthority] = PublicKey.findProgramAddressSync(
+          [Buffer.from('pool-authority'), mintPubkey.toBuffer()],
+          PUMP_PROGRAM_ID
+        );
+        
+        const indexBuffer = Buffer.allocUnsafe(2);
+        indexBuffer.writeUInt16LE(0, 0);
+        const [pool] = PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('pool'),
+            indexBuffer,
+            poolAuthority.toBuffer(),
+            mintPubkey.toBuffer(),
+            WSOL_MINT.toBuffer()
+          ],
+          PUMP_AMM_PROGRAM_ID
+        );
+        
+        const accountInfo = await connection.getAccountInfo(pool).catch(() => null);
+        if (accountInfo) {
+          poolAccountInfo = { pubkey: pool, account: accountInfo };
+        }
+      } catch (poolAuthError) {
+      }
+      
+      if (!poolAccountInfo) {
+        try {
+          const poolAccounts = await connection.getProgramAccounts(PUMP_AMM_PROGRAM_ID, {
+            filters: [
+              {
+                dataSize: 200
+              }
+            ]
+          });
+
+          const poolCoder = new BorshCoder(pumpAmmIdl as Idl);
+          for (const { pubkey, account } of poolAccounts) {
+            try {
+              const decoded = poolCoder.accounts.decode('Pool', account.data);
+              if (decoded && decoded.base_mint && new PublicKey(decoded.base_mint).equals(mintPubkey)) {
+                poolAccountInfo = { pubkey, account };
+                break;
+              }
+            } catch {
+              continue;
+            }
+          }
+        } catch (searchError) {
+        }
+      }
+      
+      if (!poolAccountInfo && creator) {
+        try {
+          const indexBuffer = Buffer.allocUnsafe(2);
+          indexBuffer.writeUInt16LE(0, 0);
+          const [pool] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from('pool'),
+              indexBuffer,
+              new PublicKey(creator).toBuffer(),
+              mintPubkey.toBuffer(),
+              WSOL_MINT.toBuffer()
+            ],
+            PUMP_AMM_PROGRAM_ID
+          );
+          const accountInfo = await connection.getAccountInfo(pool).catch(() => null);
+          if (accountInfo) {
+            poolAccountInfo = { pubkey: pool, account: accountInfo };
+          }
+        } catch {
+        }
+      }
+      
+      if (!poolAccountInfo) {
+        console.warn(`Pool account not found for migrated coin ${mintPubkey.toString()}`);
+      }
+      
+      if (poolAccountInfo) {
+        try {
+          const poolCoder = new BorshCoder(pumpAmmIdl as Idl);
+          const poolDecoded = poolCoder.accounts.decode('Pool', poolAccountInfo.account.data);
+          
+          if (poolDecoded && poolDecoded.pool_base_token_account && poolDecoded.pool_quote_token_account) {
+            const poolBaseTokenAccount = new PublicKey(poolDecoded.pool_base_token_account);
+            const poolQuoteTokenAccount = new PublicKey(poolDecoded.pool_quote_token_account);
+
+            const [baseAccountInfo, quoteAccountInfo] = await Promise.all([
+              connection.getParsedAccountInfo(poolBaseTokenAccount).catch(() => null),
+              connection.getParsedAccountInfo(poolQuoteTokenAccount).catch(() => null)
+            ]);
+
+            if (baseAccountInfo?.value && quoteAccountInfo?.value) {
+              const baseParsed = (baseAccountInfo.value.data as any).parsed?.info;
+              const quoteParsed = (quoteAccountInfo.value.data as any).parsed?.info;
+              
+              if (baseParsed?.tokenAmount && quoteParsed?.tokenAmount) {
+                const baseBalance = BigInt(baseParsed.tokenAmount.amount || '0');
+                const quoteBalance = BigInt(quoteParsed.tokenAmount.amount || '0');
+
+                if (baseBalance > 0n && quoteBalance > 0n) {
+                  price = Number(quoteBalance) / Number(baseBalance);
+                  
+                  const priceInSol = price / 1e3;
+                  
+                  marketcap = priceInSol * 1_000_000_000;
+
+                  const solPriceUsd = await getSolPriceUsd();
+                  if (solPriceUsd !== null && solPriceUsd > 0) {
+                    priceUsd = priceInSol * solPriceUsd;
+                    marketcapUsd = priceUsd * 1_000_000_000;
+                  }
+                }
+              }
+            } else {
+              try {
+                const [baseAccount, quoteAccount] = await Promise.all([
+                  getAccount(connection, poolBaseTokenAccount, 'confirmed', TOKEN_PROGRAM_ID).catch(() => null),
+                  getAccount(connection, poolQuoteTokenAccount, 'confirmed', TOKEN_PROGRAM_ID).catch(() => null)
+                ]);
+
+                if (baseAccount && quoteAccount) {
+                  const baseBalance = baseAccount.amount;
+                  const quoteBalance = quoteAccount.amount;
+
+                  if (baseBalance > 0n && quoteBalance > 0n) {
+                    price = Number(quoteBalance) / Number(baseBalance);
+                    const priceInSol = price / 1e3;
+                    marketcap = priceInSol * 1_000_000_000;
+
+                    const solPriceUsd = await getSolPriceUsd();
+                    if (solPriceUsd !== null && solPriceUsd > 0) {
+                      priceUsd = priceInSol * solPriceUsd;
+                      marketcapUsd = priceUsd * 1_000_000_000;
+                    }
+                  }
+                }
+              } catch (accountError) {
+                console.warn(`Failed to fetch token accounts for migrated coin ${mintPubkey.toString()}:`, accountError instanceof Error ? accountError.message : String(accountError));
+              }
+            }
+          }
+        } catch (decodeError) {
+          try {
+            const poolPubkey = poolAccountInfo.pubkey;
+            const [poolBaseTokenAccount] = PublicKey.findProgramAddressSync(
+              [poolPubkey.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPubkey.toBuffer()],
+              PUMP_AMM_PROGRAM_ID
+            );
+
+            const [poolQuoteTokenAccount] = PublicKey.findProgramAddressSync(
+              [poolPubkey.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), WSOL_MINT.toBuffer()],
+              PUMP_AMM_PROGRAM_ID
+            );
+
+            const [baseAccountInfo, quoteAccountInfo] = await Promise.all([
+              connection.getParsedAccountInfo(poolBaseTokenAccount).catch(() => null),
+              connection.getParsedAccountInfo(poolQuoteTokenAccount).catch(() => null)
+            ]);
+
+            if (baseAccountInfo?.value && quoteAccountInfo?.value) {
+              const baseParsed = (baseAccountInfo.value.data as any).parsed?.info;
+              const quoteParsed = (quoteAccountInfo.value.data as any).parsed?.info;
+              
+              if (baseParsed?.tokenAmount && quoteParsed?.tokenAmount) {
+                const baseBalance = BigInt(baseParsed.tokenAmount.amount || '0');
+                const quoteBalance = BigInt(quoteParsed.tokenAmount.amount || '0');
+
+                if (baseBalance > 0n && quoteBalance > 0n) {
+                  price = Number(quoteBalance) / Number(baseBalance);
+                  const priceInSol = price / 1e3;
+                  marketcap = priceInSol * 1_000_000_000;
+
+                  const solPriceUsd = await getSolPriceUsd();
+                  if (solPriceUsd !== null && solPriceUsd > 0) {
+                    priceUsd = priceInSol * solPriceUsd;
+                    marketcapUsd = priceUsd * 1_000_000_000;
+                  }
+                }
+              }
+            }
+          } catch (fallbackError) {
+            console.warn(`Failed to fetch pool reserves for migrated coin ${mintPubkey.toString()}:`, fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
+          }
+        }
+      }
+    } catch (poolError) {
+      console.warn(`Failed to fetch pool data for migrated coin ${mintPubkey.toString()}:`, poolError instanceof Error ? poolError.message : String(poolError));
+    }
+  } else if (decoded && decoded.virtual_sol_reserves !== undefined && decoded.virtual_token_reserves !== undefined) {
     const virtualSolReserves = typeof decoded.virtual_sol_reserves === 'bigint' 
       ? Number(decoded.virtual_sol_reserves) 
       : decoded.virtual_sol_reserves;
@@ -237,23 +436,16 @@ export async function getTokenInfo(
       : decoded.virtual_token_reserves;
 
     if (virtualTokenReserves > 0) {
-      // price = virtual_sol_reserves / virtual_token_reserves (lamports per token base unit)
       price = virtualSolReserves / virtualTokenReserves;
       
-      // Convert lamports to SOL per full token (accounting for 6 decimals)
-      // price is lamports per token base unit, tokens have 6 decimals (1e6 base units per token)
-      // So: SOL per full token = (price / 1e9) * 1e6 = price / 1e3
-      const priceInSol = price / 1e3; // SOL per full token
+      const priceInSol = price / 1e3;
       
-      // marketcap = priceInSol × 1,000,000,000 (total supply in SOL)
       marketcap = priceInSol * 1_000_000_000;
 
-      // Convert SOL amounts to USD
       const solPriceUsd = await getSolPriceUsd();
       if (solPriceUsd !== null && solPriceUsd > 0) {
         priceUsd = priceInSol * solPriceUsd;
         
-        // marketcapUsd = priceUsd × 1,000,000,000 (total supply)
         marketcapUsd = priceUsd * 1_000_000_000;
       }
     }
@@ -263,8 +455,8 @@ export async function getTokenInfo(
     mint: mintPubkey.toString(),
     bondingCurve: bondingCurve.toString(),
     migrated: migrated,
-    creator: decoded.creator?.toString() || '',
-    isMayhemMode: decoded.is_mayhem_mode || false,
+    creator: creator || '',
+    isMayhemMode: decoded?.is_mayhem_mode || false,
     price: price,
     marketcap: marketcap,
     priceUsd: priceUsd,
@@ -391,7 +583,6 @@ async function retryWithBackoff<T>(
     } catch (error: any) {
       lastError = error;
       
-      // Check if it's a 429 error
       const isRateLimit = error?.message?.includes('429') || 
                          error?.message?.includes('Too many requests') ||
                          error?.code === 429;
@@ -400,7 +591,6 @@ async function retryWithBackoff<T>(
         throw error;
       }
       
-      // Exponential backoff: 500ms, 1000ms, 2000ms, 4000ms, 8000ms
       const delay = initialDelay * Math.pow(2, attempt);
       console.log(`Server responded with 429 Too Many Requests.  Retrying after ${delay}ms delay...`);
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -426,7 +616,6 @@ export async function getTopHolders(
 
   const bondingCurve = await deriveBondingCurve(mintPubkey);
   
-  // Retry RPC calls with exponential backoff
   const [largestAccounts, mintInfo] = await Promise.all([
     retryWithBackoff(() => connection.getTokenLargestAccounts(mintPubkey)),
     retryWithBackoff(() => connection.getParsedAccountInfo(mintPubkey))
@@ -448,7 +637,6 @@ export async function getTopHolders(
 
   const tokenAccountPubkeys = largestAccounts.value.map(acc => new PublicKey(acc.address));
   
-  // Retry getMultipleAccountsInfo with exponential backoff
   const accountInfos = await retryWithBackoff(() => 
     connection.getMultipleAccountsInfo(tokenAccountPubkeys)
   );
